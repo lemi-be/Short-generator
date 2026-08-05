@@ -77,8 +77,8 @@ Don't want to self-host? The [AI Clipping API](https://muapi.ai/playground/ai-cl
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/SamurAIGPT/AI-Youtube-Shorts-Generator.git
-   cd AI-Youtube-Shorts-Generator
+   git clone https://github.com/lemi-be/Short-generator.git
+   cd Short-generator
    ```
 
 2. **Create and activate a virtual environment:**
