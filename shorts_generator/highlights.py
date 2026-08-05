@@ -7,14 +7,15 @@ Logic ported from ViralVadoo's transcript_analysis/highlight_generator.py:
   - score-based dedupe with overlap suppression
 
 The LLM call is pluggable via the `llm_fn` argument so the same prompts can
-drive either MuAPI (default, --mode api) or a direct local LLM client
-(--mode local).
+drive either a direct local LLM client (default, --mode local) or MuAPI
+(--mode api, kept for reference).
 """
 import json
 import re
 from typing import Callable, Dict, List, Optional
 
 from . import muapi
+from .progress import Progress
 
 
 LLMFn = Callable[[str], str]
@@ -45,27 +46,33 @@ HIGHLIGHT_SYSTEM_PROMPT = """You are an elite short-form video editor who has st
 
 Content type: {content_type} | Density: {density}
 
-Your task: identify the most viral-worthy highlights from the transcript.
+Your task: identify the most viral-worthy highlights from the transcript. These will be cropped into vertical 9:16 shorts, so every second has to earn its place.
 
 Rules:
-- Every highlight must open with a strong HOOK — a line that grabs attention within the first 3 seconds
-- Duration sweet spot: 45-90 seconds. Go shorter (20-44s) only for a perfect standalone one-liner. Go longer (91-180s) only when a story arc needs full context to land
-- Never cut mid-sentence or mid-thought — each clip must feel complete and self-contained
-- Clips must not overlap significantly with each other
-- Score 0-100 on viral potential (not general quality)
+- HARD DURATION CAP: each highlight must be between 30 and 60 seconds. Never shorter than 30s, never longer than 60s. Pick the tightest window that contains the full hook-to-payoff arc.
+- Every highlight must open with a strong HOOK — a line that grabs attention within the first 3 seconds. Lead with the strongest line in the window; do not start at a low-energy setup.
+- Never cut mid-sentence or mid-thought — each clip must feel complete and self-contained (start and end on a natural sentence boundary).
+- Clips must not overlap with each other.
+- Score 0-100 on viral potential (not general quality). Bias toward moments that stop the scroll, not moments that are merely interesting.
 - {num_clips_instruction}
-- For each highlight, identify the single best "hook_sentence" — the opening line that would make someone stop scrolling
-- Explain in one sentence why this clip is viral ("virality_reason")
+- For each highlight, identify the single best "hook_sentence" — the opening line that would make someone stop scrolling. It must be the literal first line of the clip.
+- Explain in one sentence why this clip is viral ("virality_reason").
 
 Respond ONLY with valid JSON (no markdown, no explanation):
 {{"highlights":[{{"title":"string","start_time":float,"end_time":float,"score":int,"hook_sentence":"string","virality_reason":"string"}}]}}"""
 
 
-CHUNK_SIZE_SECONDS = 1200       # 20-min chunks for long videos
+CHUNK_SIZE_SECONDS = 600       # 10-min chunks for long videos (20 min was too large; the LLM's JSON output degrades with 400+ transcript lines)
 LONG_VIDEO_THRESHOLD = 1800     # chunk videos longer than 30 min
 CHUNK_OVERLAP_SECONDS = 60
 GPT_CALL_TIMEOUT_SECONDS = 300  # cap LLM polls at 5 min — a wedged call should fail fast
 MAX_HIGHLIGHT_API_ATTEMPTS = 3
+
+# Hard length cap for any rendered short. The LLM is also told to stay
+# inside this window, but we clamp again here so a model that returns a
+# 90s clip is truncated, not rendered.
+MIN_CLIP_SECONDS = 30
+MAX_CLIP_SECONDS = 60
 
 
 def call_muapi_llm(prompt: str) -> str:
@@ -124,8 +131,20 @@ def _coerce_int(value: object, default: int = 0) -> int:
         return default
 
 
-def _sanitize_highlights(raw_highlights: object, duration: float) -> List[Dict]:
-    """Normalize model output into the expected shape; skip invalid entries."""
+def _sanitize_highlights(
+    raw_highlights: object,
+    duration: float,
+    min_seconds: float = MIN_CLIP_SECONDS,
+    max_seconds: float = MAX_CLIP_SECONDS,
+) -> List[Dict]:
+    """Normalize model output into the expected shape; skip invalid entries.
+
+    Hard cap: every clip is clamped to [min_seconds, max_seconds]. The LLM
+    is told to stay inside the window, but we re-clamp here so any clip the
+    model returns that's too long is truncated to max_seconds, and any clip
+    that's too short is dropped (videos that can't sustain 30s of
+    engagement don't perform on short-form feeds).
+    """
     if not isinstance(raw_highlights, list):
         return []
 
@@ -145,6 +164,14 @@ def _sanitize_highlights(raw_highlights: object, duration: float) -> List[Dict]:
             end = min(end, max_end)
             if end <= start:
                 continue
+
+        # Enforce [min_seconds, max_seconds] window. Truncate from the right
+        # (drop the tail of the clip) so the hook line at start_time is
+        # preserved.
+        if end - start > max_seconds:
+            end = start + max_seconds
+        if end - start < min_seconds:
+            continue
 
         cleaned.append(
             {
@@ -204,6 +231,8 @@ def call_highlight_api(
     num_clips: int,
     is_chunk: bool = False,
     llm_fn: LLMFn = call_muapi_llm,
+    min_clip_seconds: float = MIN_CLIP_SECONDS,
+    max_clip_seconds: float = MAX_CLIP_SECONDS,
 ) -> Dict:
     # Ask for ~2× the user's target so dedupe has headroom, but cap so the model
     # doesn't have to generate a huge JSON payload (which times out gpt-5-mini).
@@ -224,7 +253,12 @@ def call_highlight_api(
         raw = llm_fn(prompt)
         try:
             parsed = _parse_json_loose(raw)
-            highlights = _sanitize_highlights(parsed.get("highlights"), duration=duration)
+            highlights = _sanitize_highlights(
+                parsed.get("highlights"),
+                duration=duration,
+                min_seconds=min_clip_seconds,
+                max_seconds=max_clip_seconds,
+            )
             if highlights:
                 return {"highlights": highlights}
             last_error = "no valid highlights in response"
@@ -241,6 +275,8 @@ def call_highlight_api(
                 + "\n\nIMPORTANT: Return ONLY valid JSON with a top-level 'highlights' array."
                 + " Each item must include: title, start_time, end_time, score, hook_sentence, virality_reason."
                 + " No markdown fences, no commentary."
+                + "\n\nEXAMPLE:\n"
+                + '{"highlights":[{"title":"The Hook","start_time":420.0,"end_time":460.0,"score":95,"hook_sentence":"Nobody talks about this...","virality_reason":"Creates immediate curiosity with a bold claim."}]}'
             )
 
     raise RuntimeError(
@@ -271,8 +307,10 @@ def dedupe_highlights(highlights: List[Dict]) -> List[Dict]:
 
 def get_highlights(
     transcript: Dict,
-    num_clips: int = 3,
+    num_clips: int = 10,
     llm_fn: Optional[LLMFn] = None,
+    min_clip_seconds: float = MIN_CLIP_SECONDS,
+    max_clip_seconds: float = MAX_CLIP_SECONDS,
 ) -> Dict:
     """Main entry point — returns {highlights: [...]} sorted by score.
 
@@ -281,26 +319,71 @@ def get_highlights(
     """
     llm_fn = llm_fn or call_muapi_llm
     duration = transcript.get("duration", 0)
-    content_info = detect_content_type(transcript, llm_fn=llm_fn)
+    print(f"[highlights] detecting content type...", flush=True)
+    with Progress("Detecting content type", total=None):
+        content_info = detect_content_type(transcript, llm_fn=llm_fn)
     print(f"[highlights] content={content_info.get('content_type')} density={content_info.get('density')} duration={duration:.0f}s", flush=True)
 
     if duration >= LONG_VIDEO_THRESHOLD:
         chunks = chunk_transcript(transcript)
         print(f"[highlights] long video — splitting into {len(chunks)} chunks", flush=True)
         all_highlights: List[Dict] = []
-        for i, chunk in enumerate(chunks):
-            offset = chunk.get("_offset", 0)
-            text = build_transcript_text(chunk)
-            print(f"[highlights] chunk {i + 1}/{len(chunks)} (offset {offset:.0f}s)", flush=True)
-            result = call_highlight_api(text, content_info, chunk["duration"], num_clips=num_clips, is_chunk=True, llm_fn=llm_fn)
-            for h in result.get("highlights", []):
-                h["start_time"] = float(h["start_time"]) + offset
-                h["end_time"] = float(h["end_time"]) + offset
-                all_highlights.append(h)
+        chunk_failures = 0
+        p = Progress(
+            f"Ranking highlights (long video, {len(chunks)} chunks)",
+            total=len(chunks),
+        )
+        p.__enter__()
+        try:
+            for i, chunk in enumerate(chunks):
+                offset = chunk.get("_offset", 0)
+                text = build_transcript_text(chunk)
+                print(f"[highlights] chunk {i + 1}/{len(chunks)} (offset {offset:.0f}s)", flush=True)
+                try:
+                    result = call_highlight_api(
+                        text,
+                        content_info,
+                        chunk["duration"],
+                        num_clips=num_clips,
+                        is_chunk=True,
+                        llm_fn=llm_fn,
+                        min_clip_seconds=min_clip_seconds,
+                        max_clip_seconds=max_clip_seconds,
+                    )
+                    for h in result.get("highlights", []):
+                        h["start_time"] = float(h["start_time"]) + offset
+                        h["end_time"] = float(h["end_time"]) + offset
+                        all_highlights.append(h)
+                except Exception as e:
+                    chunk_failures += 1
+                    print(
+                        f"  [!] chunk {i + 1} failed, skipping: {e}",
+                        flush=True,
+                    )
+                p.update(i + 1)
+        except Exception as e:
+            p.fail(str(e))
+            raise
+
+        if not all_highlights:
+            p.fail("all chunks failed — no highlights found")
+        else:
+            skipped = f" ({len(chunks) - chunk_failures}/{len(chunks)} chunks)" if chunk_failures else ""
+            p.finish(f"{len(all_highlights)} highlights{skipped}")
         highlights = dedupe_highlights(all_highlights)
     else:
         text = build_transcript_text(transcript)
-        result = call_highlight_api(text, content_info, duration, num_clips=num_clips, llm_fn=llm_fn)
+        with Progress("Ranking highlights", total=None):
+            result = call_highlight_api(
+                text,
+                content_info,
+                duration,
+                num_clips=num_clips,
+                llm_fn=llm_fn,
+                min_clip_seconds=min_clip_seconds,
+                max_clip_seconds=max_clip_seconds,
+            )
         highlights = dedupe_highlights(result.get("highlights", []))
 
+    print(f"[highlights] {len(highlights)} candidates after dedupe", flush=True)
     return {"highlights": highlights}

@@ -1,0 +1,9 @@
+1. 🎙️ Stage & Solo Speaker
+Sub-Niches: Preaching, stand-up comedy, keynotes, motivational talks.
+
+Visual Identity: Full-height single-panel focus (9:16 canvas), speaker's head framed in the top third, dynamic word-by-word captions at lower-middle (y ≈ 1350px), top/bottom safe zones for UI overlays.
+
+2. 🎙️ Podcast & Dialogue
+Sub-Niches: Interviews, panel discussions, co-host conversations.
+
+Visual Identity: Stacked 50/50 split-screen (two 9:8 panels), accent divider line at the center, captions across the center divide or lower-third.

@@ -9,13 +9,14 @@ import json
 import sys
 
 # Windows uses 'charmap' by default, which can't encode Unicode characters
-# like →. Reconfigure stdout/stderr to UTF-8 so output works on all platforms.
+# like ->. Reconfigure stdout/stderr to UTF-8 so output works on all platforms.
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from shorts_generator import generate_shorts
+from shorts_generator.local.clipper import TEMPLATE_SPECS
 
 
 def main() -> int:
@@ -24,13 +25,15 @@ def main() -> int:
     parser.add_argument(
         "--mode",
         choices=["api", "local"],
-        default="api",
-        help="api (default, MuAPI) or local (remote URL, file://, or local path + faster-whisper + LLM provider + ffmpeg).",
+        default="local",
+        help="local (default, yt-dlp + faster-whisper + LLM provider + ffmpeg) or api (MuAPI, kept for reference).",
     )
-    parser.add_argument("--num-clips", type=int, default=3, help="How many shorts to render (default: 3)")
-    parser.add_argument("--aspect-ratio", default="9:16", help="Output aspect ratio (default: 9:16)")
+    parser.add_argument("--num-clips", type=int, default=10, help="How many shorts to render (default: 10)")
     parser.add_argument("--format", default="720", help="Source download resolution: 360 / 480 / 720 / 1080 (default: 720)")
     parser.add_argument("--language", default=None, help="Force Whisper language code, e.g. 'en' (default: auto-detect)")
+    parser.add_argument("--max-clip-seconds", type=int, default=60, help="Hard cap on rendered clip length in seconds (default: 60, max 60). Clips longer than this from the LLM are truncated to start_time + N.")
+    parser.add_argument("--min-clip-seconds", type=int, default=30, help="Minimum clip length in seconds (default: 30). Clips shorter than this are dropped — short-form feeds don't retain sub-30s clips.")
+    parser.add_argument("--template", default=None, choices=list(TEMPLATE_SPECS.keys()), help="Cropping template (see TEMPLATE_SPECS in clipper.py)")
     parser.add_argument("--output-json", default=None, help="Write the full result JSON to this path")
     args = parser.parse_args()
 
@@ -38,10 +41,12 @@ def main() -> int:
         result = generate_shorts(
             youtube_url=args.url,
             num_clips=args.num_clips,
-            aspect_ratio=args.aspect_ratio,
             download_format=args.format,
             language=args.language,
             mode=args.mode,
+            max_clip_seconds=args.max_clip_seconds,
+            min_clip_seconds=args.min_clip_seconds,
+            template=args.template,
         )
     except Exception as e:
         print(f"\nFAILED: {e}", file=sys.stderr)
@@ -49,11 +54,12 @@ def main() -> int:
 
     print("\n" + "=" * 72)
     print(f"Mode:          {result.get('mode', args.mode)}")
+    print(f"Template:      {result.get('template', 'stage_solo_speaker')}")
     print(f"Source video:  {result['source_video_url']}")
-    print(f"Highlights:    {len(result['highlights'])} candidates → kept top {len(result['shorts'])}")
+    print(f"Highlights:    {len(result['highlights'])} candidates -> kept top {len(result['shorts'])}")
     print("=" * 72)
     for i, s in enumerate(result["shorts"], 1):
-        print(f"\n#{i}  score={s.get('score')}  {s.get('start_time'):.1f}s → {s.get('end_time'):.1f}s")
+        print(f"\n#{i}  score={s.get('score')}  {s.get('start_time'):.1f}s -> {s.get('end_time'):.1f}s")
         print(f"     title:  {s.get('title')}")
         print(f"     hook:   {s.get('hook_sentence')}")
         if s.get("clip_url"):

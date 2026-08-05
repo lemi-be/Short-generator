@@ -26,6 +26,24 @@ def _coerce_verbose(raw) -> Dict:
 def _extract_verbose_payload(result: Dict) -> Dict:
     """MuAPI wraps results inconsistently across endpoints. Hunt for the
     verbose_json blob (which has `segments` + `duration`)."""
+    
+    # Check for error status first
+    status = result.get("status", "").lower()
+    if status in ("failed", "error"):
+        error_msg = result.get("error") or result.get("message") or "Unknown error"
+        raise RuntimeError(f"Whisper transcription failed with status '{status}': {error_msg}")
+    
+    # If outputs exist but are empty, that means transcription ran but found no speech
+    outputs = result.get("outputs")
+    if isinstance(outputs, list) and len(outputs) == 0:
+        raise RuntimeError(
+            f"Whisper produced no output (empty segments). The video may have:\n"
+            f"  - No detectable speech\n"
+            f"  - Only music/background noise\n"
+            f"  - Audio in an unsupported language\n"
+            f"Response: {result}"
+        )
+    
     for key in ("output", "result", "outputs"):
         v = result.get(key)
         if isinstance(v, dict) and "segments" in v:
@@ -43,7 +61,10 @@ def _extract_verbose_payload(result: Dict) -> Dict:
     if "segments" in result:
         return result
 
-    raise RuntimeError(f"Could not find Whisper segments in MuAPI response: {result}")
+    raise RuntimeError(
+        f"Could not find Whisper segments in MuAPI response.\n"
+        f"Expected 'segments' key in output/result/outputs, but got: {result}"
+    )
 
 
 def transcribe(media_url: str, language: Optional[str] = None) -> Dict:

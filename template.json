@@ -1,0 +1,36 @@
+{
+  "templateSystem": {
+    "version": "2.0",
+    "description": "Short-Form Video Clipper Template Engine",
+    "categories": [
+      {
+        "id": "talk_conversation",
+        "name": "Talk & Conversation",
+        "templates": [
+          {
+            "id": "stage_solo_speaker",
+            "name": "Stage & Solo Speaker",
+            "layout": {
+              "type": "single_focus",
+              "region": { "source": "active_speaker", "aspectRatio": "9:16_full" }
+            },
+            "typography": { "position": "lower_third", "fontScale": 1.1 },
+            "autoFraming": { "enabled": true, "trackingMode": "face_centered" }
+          },
+          {
+            "id": "podcast_split_screen",
+            "name": "Podcast & Dialogue",
+            "layout": {
+              "type": "split_vertical",
+              "splitRatio": 0.5,
+              "focus": "top",
+              "divider": { "thickness": 2, "color": "#FFFFFF" }
+            },
+            "typography": { "position": "center", "maxLines": 2 },
+            "autoFraming": { "enabled": true, "trackingMode": "face_centered" }
+          }
+        ]
+      }
+    ]
+  }
+}

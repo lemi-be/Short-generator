@@ -1,0 +1,164 @@
+{% extends "webui/base.html" %}
+{% block title %}Clips — {{ video_id }} | Shorts Generator{% endblock %}
+{% block content %}
+<p style="margin-bottom:.75rem">
+  <a href="{% url 'home' %}">&larr; Back to videos</a>
+</p>
+
+<div class="card">
+  {% if msg %}
+  <div class="msg-success">{{ msg }}</div>
+  {% endif %}
+  <div class="pipeline" style="margin-bottom:.5rem">
+    <span class="step done">&#10003; Downloaded</span>
+    <span class="arrow">&rarr;</span>
+    <span class="step done">&#10003; Transcribed</span>
+    <span class="arrow">&rarr;</span>
+    <span class="step active">&#9679; Pick clips</span>
+    <span class="arrow">&rarr;</span>
+    <span class="step {% if generated_shorts %}done{% else %}pending{% endif %}">
+      {% if generated_shorts %}&#10003; {% endif %}Generate
+    </span>
+  </div>
+  <strong>{{ filename }}</strong> &mdash; {{ duration|floatformat:0 }}s total
+</div>
+
+{% if not segments %}
+<div class="msg-error">No transcript found. <a href="{% url 'transcribe' video_id %}">Transcribe this video first</a>.</div>
+{% endif %}
+
+<div class="grid-2">
+  <div>
+    <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:.5rem">
+      <h2 style="margin:0">Transcript</h2>
+      {% if segments %}
+      <a class="btn btn-secondary btn-sm" href="{% url 'download_transcript' video_id %}" download>Download SRT</a>
+      {% endif %}
+    </div>
+    <p style="font-size:.8rem;color:#888;margin-bottom:.5rem">Click a line to set start time, then click another to set end.</p>
+    <div class="scroll-box" id="transcript-box">
+      {% for seg in segments %}
+      <div class="segment" data-start="{{ seg.start }}" data-end="{{ seg.end }}"
+           data-ts="{{ seg.ts }}" data-te="{{ seg.te }}"
+           onclick="pickTime(this)">
+        <span class="ts">{{ seg.ts }} &ndash; {{ seg.te }}</span>
+        {{ seg.text }}
+      </div>
+      {% empty %}
+      <p style="padding:1rem;color:#888">No transcript.</p>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div>
+    <h2>Add clip</h2>
+    <form class="add-clip" method="POST" action="{% url 'add_clip' video_id %}" onsubmit="return validateForm()">
+      {% csrf_token %}
+      <label>Start</label>
+      <input type="text" class="ts-display" id="start-display" value="--:--:--,---" placeholder="HH:MM:SS,mmm" autocomplete="off" oninput="syncStart()">
+      <input type="hidden" name="start" id="start-input">
+      <label>End</label>
+      <input type="text" class="ts-display" id="end-display" value="--:--:--,---" placeholder="HH:MM:SS,mmm" autocomplete="off" oninput="syncEnd()">
+      <input type="hidden" name="end" id="end-input">
+      <button class="btn btn-primary btn-sm" type="submit">+ Add</button>
+    </form>
+
+    <h2>Selected clips ({{ clips|length }})</h2>
+    <div class="scroll-box" style="max-height:40vh">
+      {% for clip in clips %}
+      <div class="clip-row">
+        <span>{{ clip.start_ts }} &rarr; {{ clip.end_ts }}
+          ({{ clip.duration_ts }})</span>
+        <form class="inline-form" method="POST" action="{% url 'delete_clip' video_id clip.id %}">
+          {% csrf_token %}
+          <button class="btn btn-danger btn-sm" type="submit">&times;</button>
+        </form>
+      </div>
+      {% empty %}
+      <p style="padding:1rem;color:#888">No clips yet. Click transcript lines above.</p>
+      {% endfor %}
+    </div>
+
+    {% if clips %}
+    <div style="margin-top:1rem">
+      <form method="POST" action="{% url 'generate' video_id %}">
+        {% csrf_token %}
+        <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-bottom:.5rem">
+          <label style="font-size:.85rem;font-weight:500">Template:</label>
+          <select name="template" style="padding:.35rem;border:1px solid #ccc;border-radius:4px;font-size:.85rem">
+            <optgroup label="Talk &amp; Conversation">
+              <option value="stage_solo_speaker">Stage &amp; Solo Speaker</option>
+              <option value="podcast_split_screen">Podcast &amp; Dialogue</option>
+            </optgroup>
+          </select>
+          <button class="btn btn-success" type="submit">Generate {{ clips|length }} short{{ clips|length|pluralize }}</button>
+        </div>
+      </form>
+    </div>
+    {% endif %}
+
+    {% if generated_shorts %}
+    <h2 style="margin-top:1rem">Generated shorts <span style="font-weight:normal;font-size:.8rem;color:#888">(click to play, trim to re-cut)</span></h2>
+    {% for s in generated_shorts %}
+    <div class="clip-row" style="font-size:.85rem">
+      <span class="flex">
+        <a href="{% url 'serve_output' s.name %}" target="_blank" style="color:#1a73e8">{{ s.name }}</a>
+        <span style="color:#888">{{ s.stat.st_size|filesizeformat }}</span>
+      </span>
+      <a class="btn btn-secondary btn-sm" href="{% url 'trim_short' video_id s.name %}">Trim</a>
+    </div>
+    {% endfor %}
+    {% endif %}
+  </div>
+</div>
+
+<script>
+let pickingStart = true;
+
+function srtToSeconds(srt) {
+  const m = srt.match(/(\d{2}):(\d{2}):(\d{2})[,.](\d{3})/);
+  if (!m) return NaN;
+  return parseInt(m[1]) * 3600 + parseInt(m[2]) * 60 + parseInt(m[3]) + parseInt(m[4]) / 1000;
+}
+
+function pickTime(el) {
+  if (pickingStart) {
+    setStart(el.dataset.start, el.dataset.ts);
+    document.getElementById('end-input').value = '';
+    document.getElementById('end-display').value = '--:--:--,---';
+    pickingStart = false;
+  } else {
+    document.getElementById('end-input').value = el.dataset.end;
+    document.getElementById('end-display').value = el.dataset.te;
+    pickingStart = true;
+  }
+}
+
+function setStart(sec, srt) {
+  document.getElementById('start-input').value = sec;
+  document.getElementById('start-display').value = srt;
+}
+
+function syncStart() {
+  const sec = srtToSeconds(document.getElementById('start-display').value);
+  if (!isNaN(sec)) document.getElementById('start-input').value = sec;
+}
+
+function syncEnd() {
+  const sec = srtToSeconds(document.getElementById('end-display').value);
+  if (!isNaN(sec)) document.getElementById('end-input').value = sec;
+}
+
+function validateForm() {
+  const s = srtToSeconds(document.getElementById('start-display').value);
+  const e = srtToSeconds(document.getElementById('end-display').value);
+  if (isNaN(s) || isNaN(e) || e <= s) {
+    alert('Enter valid SRT timestamps (HH:MM:SS,mmm). End must be after start.');
+    return false;
+  }
+  document.getElementById('start-input').value = s;
+  document.getElementById('end-input').value = e;
+  return true;
+}
+</script>
+{% endblock %}

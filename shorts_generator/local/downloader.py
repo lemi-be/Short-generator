@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from typing import Optional
 
 from ..config import LOCAL_OUTPUT_DIR
+from ..progress import Progress
 
 
 def _import_ytdlp():
@@ -92,6 +93,20 @@ def _existing_download(out_dir: str, video_id: str) -> Optional[str]:
     return None
 
 
+def _download_with_cookies(ydl_opts: dict, video_url: str) -> str:
+    ytdlp = _import_ytdlp()
+    with ytdlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(video_url, download=True)
+        p = ydl.prepare_filename(info)
+        if not os.path.exists(p):
+            stem, _ = os.path.splitext(p)
+            for ext in (".mp4", ".mkv", ".webm"):
+                if os.path.exists(stem + ext):
+                    p = stem + ext
+                    break
+        return p
+
+
 def download_youtube_local(video_url: str, fmt: str = "720", out_dir: Optional[str] = None) -> str:
     """Download a remote URL or return a local file path unchanged."""
     local_path = _resolve_local_path(video_url)
@@ -110,7 +125,22 @@ def download_youtube_local(video_url: str, fmt: str = "720", out_dir: Optional[s
             print(f"[download/local] reusing cached download: {cached}", flush=True)
             return cached
 
-    print(f"[download/local] {video_url} @ {fmt}p → {out_dir}/", flush=True)
+    print(f"[download/local] {video_url} @ {fmt}p -> {out_dir}/", flush=True)
+    progress = Progress("Downloading video", total=None)
+    progress.__enter__()
+
+    def _hook(d: dict) -> None:
+        status = d.get("status")
+        if status == "downloading":
+            total = d.get("total_bytes") or d.get("total_bytes_estimate")
+            downloaded = d.get("downloaded_bytes")
+            if total and downloaded is not None:
+                if progress.total is None:
+                    progress.set_total(total)
+                progress.update(downloaded)
+        elif status == "finished":
+            progress.finish("download complete, finalizing")
+
     ydl_opts = {
         "format": _format_for(fmt),
         "outtmpl": os.path.join(out_dir, "source_%(id)s.%(ext)s"),
@@ -118,18 +148,77 @@ def download_youtube_local(video_url: str, fmt: str = "720", out_dir: Optional[s
         "quiet": True,
         "no_warnings": True,
         "noprogress": True,
+        "progress_hooks": [_hook],
+        "retries": 10,
+        "fragment_retries": 10,
+        "file_access_retries": 10,
+        "noplaylist": True,
     }
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(video_url, download=True)
-        path = ydl.prepare_filename(info)
-        # merge_output_format may rename the extension after merge
-        if not os.path.exists(path):
-            stem, _ = os.path.splitext(path)
-            for ext in (".mp4", ".mkv", ".webm"):
-                if os.path.exists(stem + ext):
-                    path = stem + ext
-                    break
+    AUTH_HINTS = (
+        "sign in to confirm",
+        "sign in",
+        "requires authentication",
+        "login",
+        "to confirm you're not a bot",
+        "bot",
+        "HTTP Error 403",
+        "this video is only available",
+        "isn't available",
+        "restricted",
+    )
+
+    def _is_auth_error(exc: BaseException) -> bool:
+        msg = str(exc).lower()
+        return any(hint in msg for hint in AUTH_HINTS)
+
+    def _download():
+        return _download_with_cookies(ydl_opts, video_url)
+
+    from .cookies import find_manual_cookies
+
+    try:
+        path = _download()
+    except Exception as exc:
+        if not _is_auth_error(exc):
+            # Not an auth problem — surface the real cause instead of
+            # masking it behind a misleading "authentication" message.
+            raise RuntimeError(
+                f"Download failed: {exc}\n"
+                "This looks like a network or format issue, not an auth "
+                "problem. Check your connection and try again."
+            ) from exc
+
+        print(f"  [download] auth/bot detection: {exc}", flush=True)
+        # 1) A manually exported cookies.txt in the project root is the
+        #    friendliest option — it never touches the user's browser.
+        manual = find_manual_cookies()
+        if manual:
+            print(f"  [download] using manual cookies: {manual}", flush=True)
+            cookies_ydl = dict(ydl_opts, cookiefile=manual)
+            try:
+                path = _download_with_cookies(cookies_ydl, video_url)
+            except Exception:
+                print("  [download] manual cookies.txt failed.", flush=True)
+                raise
+        else:
+            print("  [download] YouTube bot detection triggered, trying browser cookies...", flush=True)
+            from .cookies import try_browser_cookies
+            cookies_path = try_browser_cookies(video_url)
+            if cookies_path:
+                ydl_opts["cookiefile"] = cookies_path
+                path = _download()
+            else:
+                raise RuntimeError(
+                    "YouTube requires authentication. Either:\n"
+                    "  1. Export your cookies and drop 'cookies.txt' in the project root:\n"
+                    "       yt-dlp --cookies cookies.txt --skip-download <video-url>\n"
+                    "     (log into YouTube in a browser first, then re-run the command)\n"
+                    "  2. Or close Chrome and retry (we'll pull cookies from it)."
+                )
+    finally:
+        if not progress._done:
+            progress.finish("download complete")
 
     print(f"[download/local] ready: {path}", flush=True)
     return path

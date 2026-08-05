@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Shorts Generator{% endblock %}</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: #f5f5f5; color: #222; padding: 1.5rem; }
+    .container { max-width: 1100px; margin: 0 auto; }
+    h1 { font-size: 1.5rem; margin-bottom: 1rem; }
+    h2 { font-size: 1.15rem; margin: 0 0 .5rem; }
+    a { color: #1a73e8; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .card { background: #fff; border-radius: 8px; padding: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,.1); margin-bottom: 1rem; }
+    .btn { display: inline-block; padding: .5rem 1rem; border-radius: 6px; border: none; font-size: .9rem; cursor: pointer; text-decoration: none; font-family: inherit; }
+    .btn-primary { background: #1a73e8; color: #fff; }
+    .btn-primary:hover { background: #1557b0; text-decoration: none; }
+    .btn-success { background: #137333; color: #fff; }
+    .btn-success:hover { background: #0d5628; text-decoration: none; }
+    .btn-danger { background: #d93025; color: #fff; }
+    .btn-danger:hover { background: #a50e0e; text-decoration: none; }
+    .btn-secondary { background: #e8eaed; color: #222; }
+    .btn-secondary:hover { background: #d2d4d7; text-decoration: none; }
+    .btn-sm { padding: .3rem .6rem; font-size: .8rem; }
+    .btn:disabled { opacity: .5; cursor: default; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: .6rem .4rem; border-bottom: 1px solid #eee; }
+    th { font-weight: 600; font-size: .85rem; color: #555; }
+    .tag { display: inline-block; padding: .2rem .5rem; border-radius: 4px; font-size: .75rem; font-weight: 500; }
+    .tag-done { background: #e6f4ea; color: #137333; }
+    .tag-pending { background: #fef7e0; color: #b06000; }
+    .tag-none { background: #f1f3f4; color: #888; }
+    .msg-success { padding: .75rem; background: #e6f4ea; border-radius: 6px; color: #137333; margin-bottom: 1rem; }
+    .msg-error { padding: .75rem; background: #fce8e6; border-radius: 6px; color: #c5221f; margin-bottom: 1rem; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+    @media (max-width: 700px) { .grid-2 { grid-template-columns: 1fr; } }
+    .segment { padding: .4rem .5rem; cursor: pointer; border-radius: 4px; font-size: .9rem; border-bottom: 1px solid #f0f0f0; }
+    .segment:hover { background: #e8f0fe; }
+    .segment .ts { color: #1a73e8; font-weight: 500; margin-right: .5rem; }
+    .clip-row { display: flex; align-items: center; justify-content: space-between; padding: .5rem; border-bottom: 1px solid #eee; }
+    .clip-row:last-child { border-bottom: none; }
+    .scroll-box { max-height: 70vh; overflow-y: auto; border: 1px solid #e0e0e0; border-radius: 6px; }
+    form.add-clip { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; padding: .75rem; background: #f8f9fa; border-radius: 6px; margin-bottom: 1rem; }
+    form.add-clip label { font-size: .85rem; font-weight: 500; }
+    .ts-display { font-family: monospace; font-size: 1rem; padding: .4rem .6rem; background: #fff; border: 1px solid #ccc; border-radius: 4px; width: 150px; flex: none; color: #222; cursor: text; }
+    .ts-display::placeholder { color: #aaa; }
+    .inline-form { display: inline; }
+    .flex { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
+    .mt-1 { margin-top: .75rem; }
+    .mb-1 { margin-bottom: .75rem; }
+
+    /* pipeline stage badges */
+    .pipeline { display: flex; gap: .25rem; align-items: center; }
+    .pipeline .step { display: flex; align-items: center; gap: .25rem; font-size: .8rem; padding: .25rem .5rem; border-radius: 4px; }
+    .pipeline .step.done { background: #e6f4ea; color: #137333; }
+    .pipeline .step.active { background: #e8f0fe; color: #1a73e8; font-weight: 600; }
+    .pipeline .step.pending { background: #f1f3f4; color: #888; }
+    .pipeline .arrow { color: #bbb; font-size: .8rem; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    {% block content %}{% endblock %}
+  </div>
+</body>
+</html>

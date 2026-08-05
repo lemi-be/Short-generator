@@ -1,0 +1,1157 @@
+{% extends "webui/base.html" %}
+{% block title %}Refine {{ filename }} | Shorts Generator{% endblock %}
+{% block content %}
+<div class="refiner">
+  <header class="rf-topbar">
+    <a class="rf-back" href="{% url 'clip_editor' video_id %}">&#8592; <span>Clips</span></a>
+    <div class="rf-title">{{ filename }}</div>
+    <div class="rf-actions">
+      <span class="rf-dur">{{ duration|floatformat:1 }}s</span>
+      <button type="submit" form="trim-form" class="rf-export" id="trim-save">&#9998; Export</button>
+    </div>
+  </header>
+
+  <main class="rf-main">
+    <!-- contextual tools: left (hook) -->
+    <aside class="rf-side rf-side-left">
+      <section class="rf-panel">
+        <header>Text Hook</header>
+        <div class="rf-body">
+          <textarea id="hook-text" rows="4" placeholder="Viral hook line — e.g. &quot;This killed my first startup&quot;"></textarea>
+          <div class="rf-presets" id="hook-presets">
+            <button data-preset="clean">Clean</button>
+            <button data-preset="stroke">Bold Stroke</button>
+            <button data-preset="pill">Pill</button>
+            <button data-preset="impact">UPPER</button>
+          </div>
+          <label>Size <input type="range" id="hook-size" min="28" max="120" value="64"></label>
+          <div class="rf-row">
+            <label>Color <input type="color" id="hook-color" value="#ffffff"></label>
+            <label>BG <input type="color" id="hook-bgcolor" value="#000000"></label>
+          </div>
+          <label>BG opacity <input type="range" id="hook-bgalpha" min="0" max="100" value="45"></label>
+          <label>Stroke <input type="range" id="hook-stroke" min="0" max="12" value="0"></label>
+          <div class="rf-row rf-checks">
+            <label><input type="checkbox" id="hook-bold" checked> Bold</label>
+            <label><input type="checkbox" id="hook-uppercase"> UPPERCASE</label>
+          </div>
+          <label>Animation
+            <select id="hook-anim">
+              <option value="none">None</option>
+              <option value="pop">Pop</option>
+              <option value="typewriter">Typewriter</option>
+            </select>
+          </label>
+          <div class="rf-posrow">
+            <button class="rf-pos" data-pos="top">Top</button>
+            <button class="rf-pos" data-pos="center">Center</button>
+            <button class="rf-pos" data-pos="bottom">Bottom</button>
+          </div>
+          <p class="rf-hint2">Drag the hook directly on the canvas &middot; snaps to center</p>
+        </div>
+      </section>
+    </aside>
+
+    <!-- 9:16 interactive canvas -->
+    <div class="rf-stage-wrap">
+      <div class="rf-stage" id="rf-stage">
+        <video id="trim-video" playsinline preload="auto"
+               src="{% url 'serve_output' filename %}"></video>
+        <div class="rf-guide rf-guide-v" id="guide-v"></div>
+        <div class="rf-guide rf-guide-h" id="guide-h"></div>
+        <div class="rf-hook" id="hook-el" hidden><div class="rf-hook-resize" id="hook-resize"></div></div>
+        <img class="rf-logo" id="logo-el" alt="logo" draggable="false">
+        <div class="rf-play" id="cc-play">&#9654;</div>
+        <div class="rf-current" id="cc-current">00:00</div>
+        <div class="rf-chip" id="cc-chip"></div>
+      </div>
+    </div>
+
+    <!-- contextual tools: right (watermark + audio) -->
+    <aside class="rf-side rf-side-right">
+      <section class="rf-panel">
+        <header>Watermark / Logo</header>
+        <div class="rf-body">
+          <div id="logo-empty">
+            <button class="rf-btn-block" id="logo-upload">Upload image</button>
+            <p class="rf-hint2">PNG with transparency works best</p>
+          </div>
+          <div id="logo-active" hidden>
+            <div class="rf-logothumb"><img id="logo-thumb" alt=""></div>
+            <div class="rf-posrow">
+              <button class="rf-pos" data-logo="tl">Top-L</button>
+              <button class="rf-pos" data-logo="tr">Top-R</button>
+              <button class="rf-pos" data-logo="br">Bot-R</button>
+              <button class="rf-pos" data-logo="cb">C-Bot</button>
+            </div>
+            <label>Size <input type="range" id="logo-scale" min="3" max="40" value="12"></label>
+            <label>Opacity <input type="range" id="logo-opacity" min="5" max="100" value="100"></label>
+            <button class="rf-btn-del" id="logo-remove">Remove watermark</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="rf-panel">
+        <header>Audio Mixer</header>
+        <div class="rf-body">
+          <label>Original volume <input type="range" id="src-volume" min="0" max="100" value="100"></label>
+          <div id="bgm-empty">
+            <button class="rf-btn-block" id="bgm-upload">Upload background music</button>
+          </div>
+          <div id="bgm-active" hidden>
+            <div class="rf-bgmname" id="bgm-name"></div>
+            <label>Music volume <input type="range" id="bgm-volume" min="0" max="100" value="15"></label>
+            <label>Start at (s) <input type="number" id="bgm-start" min="0" step="0.5" value="0"></label>
+            <label class="rf-check"><input type="checkbox" id="bgm-duck"> Duck music under voiceover</label>
+            <button class="rf-btn-del" id="bgm-remove">Remove music</button>
+          </div>
+        </div>
+      </section>
+    </aside>
+  </main>
+
+  <!-- CapCut-style timeline -->
+  <section class="rf-timeline">
+    <div class="rf-toolbar">
+      <button class="rf-iconbtn" id="cc-playbar" title="Play / pause (Space)">&#9654;</button>
+      <div class="rf-time-readout">
+        <span id="cc-time">0:00</span>
+        <span class="rf-range" id="rf-range-label">0:00 &ndash; 0:00</span>
+      </div>
+      <span class="rf-spacer"></span>
+      <button class="rf-btnghost" id="btn-undo" title="Undo last cut (Delete)">&#8634; Undo</button>
+      <button class="rf-btnghost" id="trim-reset" title="Reset trim and cuts">Reset</button>
+    </div>
+
+    <div class="rf-timeline-body">
+      <div class="rf-playhead" id="rf-playhead"><span class="rf-playhead-knob"></span></div>
+
+      <div class="rf-ruler" id="rf-ruler">
+        <div class="rf-ticks" id="rf-ticks"></div>
+      </div>
+
+      <div class="rf-track-row">
+        <span class="rf-track-label">V1</span>
+        <div class="rf-track" id="rf-track">
+          <div class="rf-filmstrip" id="cc-filmstrip"></div>
+          <div class="rf-dim" id="rf-dim-before"></div>
+          <div class="rf-dim" id="rf-dim-after"></div>
+          <div class="rf-selection" id="rf-selection"></div>
+          <div class="rf-cutlayer" id="cut-layer"></div>
+          <div class="rf-lasso" id="rf-lasso"></div>
+          <div class="rf-handle rf-handle-start" id="trim-handle-start"></div>
+          <div class="rf-handle rf-handle-end" id="trim-handle-end"></div>
+        </div>
+      </div>
+
+      <div class="rf-hooklane">
+        <div class="rf-hook-block" id="rf-hook-block"><span>Hook</span><div class="rf-hook-grip" id="rf-hook-grip"></div></div>
+      </div>
+    </div>
+
+    <div class="rf-timebar">
+      <span id="rf-clip-start">0:00</span>
+      <span class="rf-hint">Drag ruler to scrub &middot; drag on the video to remove a section &middot; white edges trim &middot; Hook edge sets duration</span>
+      <span id="rf-clip-end">0:00</span>
+    </div>
+  </section>
+</div>
+
+<form id="trim-form" method="POST" action="{% url 'trim_short' video_id filename %}">
+  {% csrf_token %}
+  <input type="hidden" name="start" id="trim-start-input">
+  <input type="hidden" name="end" id="trim-end-input">
+  <input type="hidden" name="layers" id="trim-layers-input">
+</form>
+
+<input type="file" id="logo-file" accept="image/*" style="display:none">
+<input type="file" id="bgm-file" accept="audio/*" style="display:none">
+<audio id="live-bgm" loop preload="auto"></audio>
+
+<style>
+  html, body { background: #0f0f0f !important; }
+  body { padding: 0 !important; }
+  .container { max-width: none !important; padding: 0 !important; }
+  .refiner { display: flex; flex-direction: column; height: 100vh; height: 100dvh;
+    color: #fff; font-family: system-ui, -apple-system, sans-serif; }
+
+  /* top bar */
+  .rf-topbar { display: flex; align-items: center; gap: 1rem; padding: .65rem 1rem;
+    background: linear-gradient(180deg, #1d1d1f, #171719);
+    border-bottom: 1px solid #2a2a2e; }
+  .rf-back { color: #fff; text-decoration: none; display: flex; align-items: center;
+    gap: .4rem; font-size: .9rem; padding: .35rem .6rem; border-radius: 8px;
+    transition: background .15s, color .15s; }
+  .rf-back:hover { color: #ff914d; background: rgba(255,145,77,.08); text-decoration: none; }
+  .rf-title { flex: 1; text-align: center; font-size: .9rem; color: #ccc;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; letter-spacing: .01em; }
+  .rf-actions { display: flex; align-items: center; gap: .75rem; }
+  .rf-dur { font-size: .85rem; color: #888; font-variant-numeric: tabular-nums; }
+  .rf-export { background: linear-gradient(180deg, #ffa64d, #ff914d); color: #1a1a1a;
+    font-weight: 700; border: none; padding: .5rem 1.3rem; border-radius: 999px;
+    cursor: pointer; font-size: .9rem; box-shadow: 0 2px 10px rgba(255,145,77,.35);
+    transition: transform .12s, box-shadow .12s, filter .12s; }
+  .rf-export:hover { filter: brightness(1.06); box-shadow: 0 4px 16px rgba(255,145,77,.5);
+    transform: translateY(-1px); }
+  .rf-export:active { transform: translateY(0); }
+
+  /* main row: canvas + sidebar */
+  .rf-main { flex: 1; display: flex; gap: 1rem; min-height: 0; min-width: 0;
+    padding: 1rem 1rem .75rem; }
+
+  /* 9:16 interactive canvas */
+  .rf-stage-wrap { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center;
+    min-height: 0; background: radial-gradient(ellipse at 50% 40%, #141416 0%, #0b0b0c 100%);
+    border-radius: 12px; border: 1px solid #232326; }
+  .rf-stage { position: relative; aspect-ratio: 9 / 16; height: 100%; max-width: 100%;
+    background: #000; border-radius: 10px; overflow: hidden; touch-action: none;
+    box-shadow: 0 0 0 1px rgba(255,255,255,.06), 0 12px 48px rgba(0,0,0,.6); }
+  .rf-stage video { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .rf-guide { position: absolute; z-index: 6; pointer-events: none; display: none; }
+  .rf-guide-v { top: 0; bottom: 0; left: 50%; width: 2px;
+    background: repeating-linear-gradient(180deg, rgba(255,145,77,.9) 0 6px, transparent 6px 12px); }
+  .rf-guide-h { left: 0; right: 0; top: 50%; height: 2px;
+    background: repeating-linear-gradient(90deg, rgba(255,145,77,.9) 0 6px, transparent 6px 12px); }
+  .rf-hook { position: absolute; z-index: 5; transform: translate(-50%, -50%);
+    cursor: move; white-space: pre-wrap; word-break: break-word; overflow-wrap: break-word;
+    text-align: center; line-height: 1.15; user-select: none; touch-action: none; }
+  .rf-hook-resize { position: absolute; top: 0; bottom: 0; right: -5px; width: 12px;
+    background: rgba(255,255,255,.55); border-radius: 6px; cursor: ew-resize;
+    opacity: 0; transition: opacity .15s, background .15s; z-index: 3; }
+  .rf-hook:hover .rf-hook-resize, .rf-hook.resizing .rf-hook-resize { opacity: 1; }
+  .rf-hook-resize:hover { background: rgba(255,145,77,.9); }
+  .rf-hook.pop { animation: rf-pop .32s ease-out; }
+  @keyframes rf-pop { from { transform: translate(-50%,-50%) scale(.6); opacity: 0; }
+    to { transform: translate(-50%,-50%) scale(1); opacity: 1; } }
+  .rf-logo { position: absolute; z-index: 4; cursor: move; display: none;
+    user-select: none; -webkit-user-drag: none; touch-action: none; }
+  .rf-play { position: absolute; z-index: 7; font-size: 2rem; color: rgba(255,255,255,.9);
+    background: rgba(0,0,0,.6); backdrop-filter: blur(4px); width: 68px; height: 68px;
+    border-radius: 50%; display: flex; align-items: center; justify-content: center;
+    cursor: pointer; opacity: 0; transition: opacity .18s, transform .18s;
+    border: 1px solid rgba(255,255,255,.12); left: 50%; top: 50%; margin: -34px 0 0 -34px; }
+  .rf-stage:hover .rf-play { opacity: 1; }
+  .rf-play:hover { transform: scale(1.06); }
+  .rf-current { position: absolute; z-index: 7; top: .6rem; right: .8rem; font-family: monospace;
+    font-size: .85rem; color: #fff; background: rgba(0,0,0,.65); padding: .25rem .6rem;
+    border-radius: 999px; border: 1px solid rgba(255,255,255,.1); }
+  .rf-chip { position: absolute; z-index: 7; bottom: .6rem; left: 50%; transform: translateX(-50%);
+    font-family: monospace; font-size: .82rem; color: #ff914d; background: rgba(20,20,22,.85);
+    padding: .3rem .7rem; border-radius: 999px; border: 1px solid rgba(255,145,77,.3);
+    opacity: 0; transition: opacity .2s; }
+  .rf-chip.show { opacity: 1; }
+
+  /* sidebar */
+  .rf-side { width: 320px; flex: none; height: 100%; min-height: 0; overflow-y: auto;
+    overscroll-behavior: contain; display: flex; flex-direction: column;
+    gap: .6rem; padding-right: .15rem;
+    scrollbar-width: thin; scrollbar-color: #3a3a40 transparent; }
+  .rf-side::-webkit-scrollbar { width: 10px; }
+  .rf-side::-webkit-scrollbar-track { background: transparent; }
+  .rf-side::-webkit-scrollbar-thumb { background: #3a3a40; border-radius: 6px;
+    border: 2px solid #141416; }
+  .rf-side::-webkit-scrollbar-thumb:hover { background: #555; }
+  .rf-panel { background: linear-gradient(180deg, #171719, #141416); border: 1px solid #2a2a2e;
+    border-radius: 12px; overflow: hidden; flex: 1 1 0; min-height: 0;
+    display: flex; flex-direction: column; }
+  .rf-panel header { font-size: .8rem; font-weight: 700; letter-spacing: .02em;
+    padding: .55rem .8rem; background: rgba(255,255,255,.03); border-bottom: 1px solid #2a2a2e;
+    color: #ff914d; flex: none; }
+  .rf-body { padding: .7rem .8rem .85rem; display: flex; flex-direction: column; gap: .55rem;
+    flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+    scrollbar-width: thin; scrollbar-color: #3a3a40 transparent; }
+  .rf-body::-webkit-scrollbar { width: 10px; }
+  .rf-body::-webkit-scrollbar-track { background: transparent; }
+  .rf-body::-webkit-scrollbar-thumb { background: #3a3a40; border-radius: 6px; border: 2px solid #141416; }
+  .rf-body::-webkit-scrollbar-thumb:hover { background: #555; }
+  .rf-body textarea { width: 100%; background: #121214; border: 1px solid #333; color: #fff;
+    border-radius: 8px; padding: .6rem .7rem; font-size: 1.05rem; line-height: 1.35;
+    font-family: inherit; resize: vertical; min-height: 110px; }
+  .rf-body textarea:focus { outline: none; border-color: #ff914d; }
+  .rf-body label { display: block; font-size: .76rem; color: #aaa; }
+  .rf-body label input[type=range] { width: 100%; accent-color: #ff914d; }
+  .rf-body label input[type=number] { width: 100%; background: #121214; border: 1px solid #333;
+    color: #fff; border-radius: 8px; padding: .35rem .5rem; font-size: .85rem; }
+  .rf-body label select { width: 100%; background: #121214; border: 1px solid #333; color: #fff;
+    border-radius: 8px; padding: .35rem .5rem; font-size: .85rem; }
+  .rf-body label input[type=color] { width: 100%; height: 30px; border: 1px solid #333;
+    border-radius: 6px; background: #121214; padding: 2px; cursor: pointer; }
+  .rf-row { display: flex; gap: .6rem; }
+  .rf-row > label { flex: 1; }
+  .rf-checks label { display: flex; align-items: center; gap: .4rem; font-size: .8rem; color: #ddd; }
+  .rf-checks input { accent-color: #ff914d; }
+  .rf-check { display: flex; align-items: center; gap: .4rem; }
+  .rf-check input { accent-color: #ff914d; }
+  .rf-presets { display: grid; grid-template-columns: 1fr 1fr; gap: .4rem; }
+  .rf-presets button { background: #2a2a2e; color: #fff; border: 1px solid #3a3a40;
+    border-radius: 8px; padding: .4rem .5rem; font-size: .76rem; cursor: pointer;
+    transition: background .15s, border-color .15s, color .15s; }
+  .rf-presets button:hover { background: #3a3a40; }
+  .rf-presets button.active { background: rgba(255,145,77,.16); border-color: #ff914d; color: #ff914d; }
+  .rf-posrow { display: grid; grid-template-columns: repeat(4, 1fr); gap: .35rem; }
+  .rf-posrow .rf-pos, .rf-pos { background: #2a2a2e; color: #ddd; border: 1px solid #3a3a40;
+    border-radius: 7px; padding: .38rem .3rem; font-size: .72rem; cursor: pointer;
+    transition: background .15s, border-color .15s, color .15s; }
+  .rf-pos:hover { background: #3a3a40; color: #fff; }
+  .rf-pos.active { background: rgba(255,145,77,.16); border-color: #ff914d; color: #ff914d; }
+  .rf-btn-block { width: 100%; background: #2a2a2e; color: #fff; border: 1px dashed #4a4a52;
+    border-radius: 9px; padding: .6rem; font-size: .84rem; cursor: pointer;
+    transition: background .15s, border-color .15s, color .15s; }
+  .rf-btn-block:hover { background: #35353b; border-color: #ff914d; color: #ff914d; }
+  .rf-btn-del { width: 100%; background: #3a1d1d; color: #ff8a80; border: 1px solid #5a2a2a;
+    border-radius: 8px; padding: .42rem; font-size: .78rem; cursor: pointer; }
+  .rf-btn-del:hover { background: #4a2525; }
+  .rf-logothumb { display: flex; align-items: center; justify-content: center; height: 64px;
+    background: #121214; border: 1px solid #2a2a2e; border-radius: 8px; margin-bottom: .2rem; }
+  .rf-logothumb img { max-height: 52px; max-width: 90%; object-fit: contain; }
+  .rf-bgmname { font-size: .76rem; color: #ffb; background: rgba(255,145,77,.08);
+    border: 1px solid rgba(255,145,77,.25); border-radius: 8px; padding: .4rem .5rem;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rf-hint2 { font-size: .7rem; color: #666; margin: 0; }
+
+  /* timeline panel (CapCut-style) */
+  .rf-timeline { background: linear-gradient(180deg, #151517, #121214);
+    border-top: 1px solid #232326; padding: .55rem 1rem .8rem; }
+  .rf-toolbar { display: flex; align-items: center; gap: .55rem; margin-bottom: .5rem; }
+  .rf-iconbtn { background: #26262a; color: #fff; border: none; width: 32px; height: 32px;
+    border-radius: 8px; font-size: .9rem; cursor: pointer; transition: background .15s, transform .1s; }
+  .rf-iconbtn:hover { background: #34343a; transform: translateY(-1px); }
+  .rf-time-readout { display: flex; align-items: baseline; gap: .6rem; }
+  #cc-time { font-family: monospace; font-size: 1.05rem; color: #fff;
+    font-variant-numeric: tabular-nums; }
+  .rf-range { font-family: monospace; font-size: .8rem; color: #ff914d; font-weight: 600;
+    font-variant-numeric: tabular-nums; }
+  .rf-spacer { flex: 1; }
+  .rf-btnghost { background: transparent; color: #aaa; border: 1px solid #333; padding: .3rem .7rem;
+    border-radius: 8px; font-size: .8rem; cursor: pointer; transition: color .15s, border-color .15s, background .15s; }
+  .rf-btnghost:hover { color: #fff; border-color: #555; background: #1c1c1e; }
+
+  .rf-timeline-body { position: relative; padding-left: 38px; }
+  .rf-ruler { position: relative; height: 22px; cursor: pointer; user-select: none; touch-action: none; }
+  .rf-ticks { position: absolute; inset: 0; }
+  .rf-tick { position: absolute; top: 16px; bottom: 0; width: 1px; background: #3a3a40; }
+  .rf-tick.major { background: #5a5a62; }
+  .rf-tick-label { position: absolute; top: 1px; transform: translateX(-50%);
+    font-family: monospace; font-size: .62rem; color: #777; }
+
+  .rf-track-row { position: relative; height: 62px; margin-bottom: 8px; }
+  .rf-track-label { position: absolute; left: -38px; top: 50%; transform: translateY(-50%);
+    font-size: .62rem; font-weight: 700; color: #6f6f76; width: 30px; text-align: right;
+    padding-right: 6px; letter-spacing: .05em; }
+  .rf-track { position: relative; height: 62px; border-radius: 8px; overflow: hidden;
+    background: #0d0d0f; border: 1px solid #232326; cursor: pointer;
+    user-select: none; touch-action: none; box-shadow: inset 0 1px 0 rgba(255,255,255,.04); }
+  .rf-filmstrip { position: absolute; inset: 0; display: flex; }
+  .rf-filmstrip .frame { flex: 1; background-size: cover; background-position: center;
+    filter: brightness(.9); }
+  .rf-dim { position: absolute; top: 0; bottom: 0; z-index: 2; pointer-events: none;
+    background: rgba(0,0,0,.68); box-shadow: inset 0 0 30px rgba(0,0,0,.5); }
+  .rf-selection { position: absolute; top: 0; bottom: 0; z-index: 3; pointer-events: none;
+    border-left: 2px solid #fff; border-right: 2px solid #fff;
+    background: rgba(255,255,255,.05); }
+  .rf-handle { position: absolute; top: 0; bottom: 0; width: 14px; margin-left: -7px;
+    cursor: ew-resize; z-index: 8; display: flex; align-items: center; justify-content: center; }
+  .rf-handle::after { content: ''; width: 3px; height: 100%; background: #fff;
+    border-radius: 2px; box-shadow: 0 0 4px rgba(0,0,0,.6); }
+  .rf-handle:hover::after { background: #ff914d; }
+
+  .rf-cutlayer { position: absolute; inset: 0; z-index: 5; pointer-events: none; }
+  .rf-cut { position: absolute; top: 0; bottom: 0; pointer-events: auto; cursor: pointer;
+    background: repeating-linear-gradient(-45deg, rgba(255,107,107,.45) 0 5px, rgba(70,8,8,.8) 5px 10px);
+    border-left: 1px solid #ff6b6b; border-right: 1px solid #ff6b6b; }
+  .rf-cut:hover { filter: brightness(1.5); }
+  .rf-cut b { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    color: #ff6b6b; font-size: 1.05rem; font-weight: 800; opacity: 0;
+    transition: opacity .12s; pointer-events: none; }
+  .rf-cut:hover b { opacity: 1; }
+
+  .rf-lasso { position: absolute; top: 0; bottom: 0; z-index: 6; display: none;
+    pointer-events: none; background: rgba(255,107,107,.28); border: 1px dashed #ff6b6b; }
+  .rf-lasso.on { display: block; }
+
+  .rf-hooklane { position: relative; height: 26px; }
+  .rf-hook-block { position: absolute; top: 0; bottom: 0; border-radius: 6px; overflow: hidden;
+    background: linear-gradient(180deg, #8b5eff, #6d3fff); border: 1px solid #a78bff;
+    display: flex; align-items: center; padding-left: .55rem; }
+  .rf-hook-block span { font-size: .66rem; font-weight: 700; color: #fff; letter-spacing: .02em; }
+  .rf-hook-grip { position: absolute; right: 0; top: 0; bottom: 0; width: 11px;
+    background: rgba(255,255,255,.35); cursor: ew-resize; }
+  .rf-hook-grip:hover { background: #fff; }
+
+  .rf-playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: #fff;
+    z-index: 12; display: none; pointer-events: none; box-shadow: 0 0 4px rgba(0,0,0,.5); }
+  .rf-playhead-knob { position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+    width: 16px; height: 22px; background: #fff; border-radius: 4px;
+    box-shadow: 0 1px 5px rgba(0,0,0,.55); }
+
+  .rf-timebar { display: flex; justify-content: space-between; align-items: center;
+    margin-top: .45rem; font-family: monospace; font-size: .74rem; color: #666; }
+  .rf-timebar .rf-hint { font-family: system-ui, -apple-system, sans-serif; font-size: .7rem; color: #555; }
+</style>
+<script>
+const trimVideo = document.getElementById('trim-video');
+const ccCurrent = document.getElementById('cc-current');
+const ccChip = document.getElementById('cc-chip');
+const ccFilmstrip = document.getElementById('cc-filmstrip');
+const ccPlayBtn = document.getElementById('cc-play');
+const trimReset = document.getElementById('trim-reset');
+const btnUndo = document.getElementById('btn-undo');
+const ccPlaybar = document.getElementById('cc-playbar');
+const rfRuler = document.getElementById('rf-ruler');
+const rfTicks = document.getElementById('rf-ticks');
+const rfTrack = document.getElementById('rf-track');
+const rfSelection = document.getElementById('rf-selection');
+const rfDimBefore = document.getElementById('rf-dim-before');
+const rfDimAfter = document.getElementById('rf-dim-after');
+const trimHandleStart = document.getElementById('trim-handle-start');
+const trimHandleEnd = document.getElementById('trim-handle-end');
+const rfPlayhead = document.getElementById('rf-playhead');
+const rfRangeLabel = document.getElementById('rf-range-label');
+const ccTime = document.getElementById('cc-time');
+const rfClipStart = document.getElementById('rf-clip-start');
+const rfClipEnd = document.getElementById('rf-clip-end');
+const cutLayer = document.getElementById('cut-layer');
+const rfLasso = document.getElementById('rf-lasso');
+const hookBlock = document.getElementById('rf-hook-block');
+const hookGrip = document.getElementById('rf-hook-grip');
+const stageRef = document.getElementById('rf-stage');
+const hookEl = document.getElementById('hook-el');
+const logoEl = document.getElementById('logo-el');
+const guideV = document.getElementById('guide-v');
+const guideH = document.getElementById('guide-h');
+const trimDuration = {{ duration }};
+
+const CANVAS_W = 1080;
+
+// ── Refiner state (serialised to RefinerState on export) ──
+const state = {
+  trimStart: 0,
+  trimEnd: trimDuration,
+  cuts: [],                     // [[start,end], ...] full-clip time
+  hook: {
+    text: '', size: 64, color: '#ffffff', bgColor: '#000000', bgAlpha: 0.45,
+    bold: true, stroke: 0, strokeColor: '#000000', strokeAlpha: 0.9,
+    uppercase: false, animation: 'none', x: 50, y: 12,
+    width: 0.9,
+    dur: Math.min(3, Math.max(0.5, trimDuration)),
+  },
+  logo: null,                   // {file,url,name,x,y,scale,opacity}
+  sourceVolume: 1.0,
+  bgm: null,                    // {file,url,name,start,volume}
+  ducking: false,
+};
+
+let dragging = null;            // 'start' | 'end' | 'hookgrip' | 'scrub'
+let overlayDrag = null;         // 'hook' | 'logo' (on the canvas)
+let resizeDrag = false;         // resizing the hook box width
+let lassoActive = false;
+let lassoMoved = false;
+let lassoStart = 0;
+let lassoCur = 0;
+let lassoX0 = 0;
+let hookShown = false;
+let hookRevealTimer = null;
+
+// ── helpers ──
+function fmtClock(sec, showMs) {
+  sec = Math.max(0, Math.min(sec, trimDuration));
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  if (showMs) return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+  return m + ':' + String(s).padStart(2, '0');
+}
+function pct(sec) { return (sec / trimDuration) * 100; }
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+function timeFromEvent(e) {
+  const rect = rfTrack.getBoundingClientRect();
+  const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+  return (x / rect.width) * trimDuration;
+}
+function seek(t) { trimVideo.currentTime = clamp(t, state.trimStart, state.trimEnd); }
+function hexToRgba(hex, a) {
+  hex = (hex || '#000000').replace('#', '');
+  if (hex.length === 3) hex = hex.split('').map(c => c + c).join('');
+  const r = parseInt(hex.slice(0, 2), 16);
+  const g = parseInt(hex.slice(2, 4), 16);
+  const b = parseInt(hex.slice(4, 6), 16);
+  return 'rgba(' + r + ',' + g + ',' + b + ',' + a + ')';
+}
+function dispScale() { return stageRef.clientWidth / CANVAS_W || 1; }
+
+// hook bounds: starts at trim start, lasts hook.dur
+function hookStart() { return state.trimStart; }
+function hookEnd() { return Math.min(state.trimEnd, state.trimStart + state.hook.dur); }
+
+// ── ruler ticks ──
+function buildTicks() {
+  rfTicks.innerHTML = '';
+  let step = 0.5;
+  if (trimDuration > 5 && trimDuration <= 30) step = 1;
+  else if (trimDuration > 30 && trimDuration <= 120) step = 5;
+  else if (trimDuration > 120) step = 10;
+  const labelEvery = step === 0.5 || step === 1 ? 2 : 1;
+  const n = Math.floor(trimDuration / step);
+  for (let i = 0; i <= n; i++) {
+    const t = i * step;
+    const line = document.createElement('div');
+    line.className = 'rf-tick' + (i % labelEvery === 0 ? ' major' : '');
+    line.style.left = pct(t) + '%';
+    rfTicks.appendChild(line);
+    if (i % labelEvery === 0) {
+      const lab = document.createElement('div');
+      lab.className = 'rf-tick-label';
+      lab.textContent = fmtClock(t);
+      lab.style.left = pct(t) + '%';
+      rfTicks.appendChild(lab);
+    }
+  }
+}
+
+// ── range bar rendering ──
+function renderTrim() {
+  const s = pct(state.trimStart), e = pct(state.trimEnd);
+  rfSelection.style.left = s + '%';
+  rfSelection.style.width = Math.max(0, e - s) + '%';
+  rfDimBefore.style.width = s + '%';
+  rfDimAfter.style.left = e + '%';
+  rfDimAfter.style.width = Math.max(0, 100 - e) + '%';
+  trimHandleStart.style.left = s + '%';
+  trimHandleEnd.style.left = e + '%';
+  const durSec = state.trimEnd - state.trimStart;
+  rfRangeLabel.textContent = fmtClock(state.trimStart, true) + ' \u2013 ' + fmtClock(state.trimEnd, true) + ' (' + durSec.toFixed(1) + 's)';
+  rfClipStart.textContent = fmtClock(state.trimStart);
+  rfClipEnd.textContent = fmtClock(state.trimEnd);
+  ccChip.textContent = '\u23F1 ' + fmtClock(state.trimStart, true) + ' \u2192 ' + fmtClock(state.trimEnd, true) + ' (' + durSec.toFixed(1) + 's)';
+  renderHookBand();
+  renderCuts();
+}
+
+function renderHookBand() {
+  hookBlock.style.left = pct(hookStart()) + '%';
+  hookBlock.style.width = Math.max(0, pct(hookEnd()) - pct(hookStart())) + '%';
+}
+
+function renderCuts() {
+  cutLayer.innerHTML = '';
+  state.cuts.forEach((c) => {
+    const s = Math.max(state.trimStart, c[0]);
+    const e = Math.min(state.trimEnd, c[1]);
+    if (e - s < 0.05) return;
+    const d = document.createElement('div');
+    d.className = 'rf-cut';
+    d.dataset.i = '' + state.cuts.indexOf(c);
+    d.style.left = pct(s) + '%';
+    d.style.width = Math.max(0.4, pct(e) - pct(s)) + '%';
+    const x = document.createElement('b');
+    x.textContent = '\u00d7';
+    d.appendChild(x);
+    cutLayer.appendChild(d);
+  });
+}
+
+// ── hook overlay (live preview) ──
+const _wrapCtx = (() => { const c = document.createElement('canvas'); return c.getContext('2d'); })();
+
+function hookWidthPx() {
+  return Math.max(48, state.hook.width * stageRef.clientWidth);
+}
+
+// wrap text into lines that fit the box width (matches the export)
+function hookLines() {
+  const h = state.hook;
+  const raw = h.uppercase ? h.text.toUpperCase() : h.text;
+  if (!raw.trim()) return [];
+  const pxWidth = hookWidthPx() - 48;   // minus 10px 24px padding
+  _wrapCtx.font = (h.bold ? '800 ' : '400 ') + (h.size * dispScale()) + 'px system-ui, -apple-system, sans-serif';
+  const lines = [];
+  let cur = '';
+  for (const word of raw.split(/\s+/)) {
+    let chunks = [word];
+    if (_wrapCtx.measureText(word).width > pxWidth) {
+      chunks = [];
+      let buf = '';
+      for (const ch of word) {
+        if (buf && _wrapCtx.measureText(buf + ch).width > pxWidth) { chunks.push(buf); buf = ch; }
+        else buf += ch;
+      }
+      if (buf) chunks.push(buf);
+    }
+    for (const chunk of chunks) {
+      const cand = cur ? cur + ' ' + chunk : chunk;
+      if (cur && _wrapCtx.measureText(cand).width > pxWidth) {
+        lines.push(cur);
+        cur = chunk;
+      } else {
+        cur = cand;
+      }
+    }
+  }
+  if (cur) lines.push(cur);
+  return lines;
+}
+
+function applyHookStyle() {
+  const h = state.hook;
+  state.hook.lines = hookLines();
+  hookEl.textContent = state.hook.lines.join('\n');
+  hookEl.style.width = hookWidthPx() + 'px';
+  hookEl.style.fontSize = (h.size * dispScale()) + 'px';
+  hookEl.style.color = h.color;
+  hookEl.style.fontWeight = h.bold ? '800' : '400';
+  hookEl.style.background = hexToRgba(h.bgColor, h.bgAlpha);
+  hookEl.style.padding = '10px 24px';
+  hookEl.style.borderRadius = '14px';
+  if (h.stroke > 0) {
+    hookEl.style.webkitTextStroke = h.stroke + 'px ' + hexToRgba(h.strokeColor, h.strokeAlpha);
+    hookEl.style.textShadow = '0 2px 6px rgba(0,0,0,.6)';
+  } else {
+    hookEl.style.webkitTextStroke = '0';
+    hookEl.style.textShadow = '0 1px 3px rgba(0,0,0,.35)';
+  }
+  hookEl.style.left = h.x + '%';
+  hookEl.style.top = h.y + '%';
+}
+
+function updateHookVisibility() {
+  const t = trimVideo.currentTime;
+  const shouldShow = state.hook.text.trim() !== '' && t >= hookStart() && t <= hookEnd();
+  if (shouldShow) {
+    if (!hookShown) {
+      hookShown = true;
+      if (state.hook.animation === 'typewriter') {
+        startTypewriter();
+      } else if (state.hook.animation === 'pop') {
+        hookEl.classList.remove('pop');
+        void hookEl.offsetWidth;
+        hookEl.classList.add('pop');
+      }
+    }
+    hookEl.hidden = false;
+  } else {
+    if (hookShown) { hookShown = false; clearInterval(hookRevealTimer); }
+    hookEl.hidden = true;
+  }
+}
+
+function startTypewriter() {
+  clearInterval(hookRevealTimer);
+  const full = hookLines().join('\n');
+  hookEl.textContent = '';
+  let i = 0;
+  hookRevealTimer = setInterval(() => {
+    i++;
+    hookEl.textContent = full.slice(0, i);
+    if (i >= full.length) clearInterval(hookRevealTimer);
+  }, 80);
+}
+
+// ── logo overlay (live preview) ──
+function applyLogoStyle() {
+  const l = state.logo;
+  if (!l) { logoEl.style.display = 'none'; return; }
+  logoEl.src = l.url;
+  logoEl.style.display = 'block';
+  logoEl.style.width = (l.scale * stageRef.clientWidth) + 'px';
+  logoEl.style.height = 'auto';
+  logoEl.style.left = l.x + '%';
+  logoEl.style.top = l.y + '%';
+  logoEl.style.opacity = l.opacity;
+}
+
+// ── dragging on the canvas with snapping ──
+function beginOverlayDrag(e, kind) {
+  e.preventDefault();
+  overlayDrag = kind;
+  document.body.style.cursor = 'grabbing';
+}
+
+function onStageMove(e) {
+  if (resizeDrag) {
+    const rect = stageRef.getBoundingClientRect();
+    const cx = (state.hook.x / 100) * rect.width;
+    const half = Math.abs((e.clientX - rect.left) - cx);
+    state.hook.width = clamp(half * 2 / rect.width, 0.15, 1);
+    applyHookStyle();
+    return;
+  }
+  if (!overlayDrag) return;
+  const rect = stageRef.getBoundingClientRect();
+  const px = clamp((e.clientX - rect.left) / rect.width * 100, 0, 100);
+  const py = clamp((e.clientY - rect.top) / rect.height * 100, 0, 100);
+  const snap = 2.0;
+  let sx = px, sy = py;
+  guideV.style.display = 'none';
+  guideH.style.display = 'none';
+  if (Math.abs(px - 50) < snap) { sx = 50; guideV.style.display = 'block'; }
+  if (Math.abs(py - 50) < snap) { sy = 50; guideH.style.display = 'block'; }
+  if (overlayDrag === 'hook') {
+    state.hook.x = sx;
+    state.hook.y = sy;
+    applyHookStyle();
+  } else if (state.logo) {
+    state.logo.x = sx;
+    state.logo.y = sy;
+    applyLogoStyle();
+  }
+}
+
+function hideGuides() {
+  guideV.style.display = 'none';
+  guideH.style.display = 'none';
+}
+
+// ── timeline interactions (trim handles, hook grip, ruler scrub, lasso cut) ──
+function beginTrimDrag(e, which) {
+  if (lassoActive) return;
+  e.preventDefault();
+  dragging = which;
+  document.body.style.cursor = 'ew-resize';
+}
+
+function onTimelineMove(e) {
+  const t = timeFromEvent(e);
+  if (dragging === 'hookgrip') {
+    state.hook.dur = clamp(t - state.trimStart, 0.5, state.trimEnd - state.trimStart);
+    renderHookBand();
+    return;
+  }
+  if (dragging === 'scrub') {
+    seek(t);
+    return;
+  }
+  if (dragging === 'start') {
+    state.trimStart = Math.min(t, state.trimEnd - 0.05);
+    if (state.hook.dur > state.trimEnd - state.trimStart) {
+      state.hook.dur = Math.max(0.5, state.trimEnd - state.trimStart);
+    }
+    renderTrim();
+    return;
+  }
+  if (dragging === 'end') {
+    state.trimEnd = Math.max(t, state.trimStart + 0.05);
+    if (state.hook.dur > state.trimEnd - state.trimStart) {
+      state.hook.dur = Math.max(0.5, state.trimEnd - state.trimStart);
+    }
+    renderTrim();
+    return;
+  }
+  if (lassoActive) {
+    if (Math.abs(e.clientX - lassoX0) > 6) lassoMoved = true;
+    updateLasso(e);
+    return;
+  }
+  if (dragging || overlayDrag) return;
+}
+
+function updateLasso(e) {
+  lassoCur = clamp(timeFromEvent(e), state.trimStart, state.trimEnd);
+  const a = clamp(Math.min(lassoStart, lassoCur), state.trimStart, state.trimEnd);
+  const b = clamp(Math.max(lassoStart, lassoCur), state.trimStart, state.trimEnd);
+  rfLasso.style.left = pct(a) + '%';
+  rfLasso.style.width = Math.max(0, pct(b) - pct(a)) + '%';
+}
+
+function endDrag() {
+  if (lassoActive) {
+    lassoActive = false;
+    rfLasso.classList.remove('on');
+    if (lassoMoved) {
+      const a = clamp(Math.min(lassoStart, lassoCur), state.trimStart, state.trimEnd);
+      const b = clamp(Math.max(lassoStart, lassoCur), state.trimStart, state.trimEnd);
+      if (b - a >= 0.3) {
+        state.cuts.push([a, b]);
+        renderCuts();
+      }
+    } else {
+      seek(lassoStart);
+    }
+  }
+  dragging = null;
+  overlayDrag = null;
+  resizeDrag = false;
+  hookEl.classList.remove('resizing');
+  document.body.style.cursor = '';
+  hideGuides();
+}
+</script>
+<script>
+// ── video / playhead sync ──
+trimVideo.addEventListener('timeupdate', () => {
+  if (!trimDuration) return;
+  const t = trimVideo.currentTime;
+  ccCurrent.textContent = fmtClock(t, true);
+  ccTime.textContent = fmtClock(t, true) + ' / ' + fmtClock(trimDuration, true);
+  rfPlayhead.style.display = 'block';
+  rfPlayhead.style.left = pct(t) + '%';
+  if (t < state.trimStart || t > state.trimEnd) {
+    trimVideo.currentTime = state.trimStart;
+  }
+  updateHookVisibility();
+});
+
+trimVideo.addEventListener('play', () => {
+  ccPlayBtn.innerHTML = '&#10074;&#10074;';
+  ccPlaybar.innerHTML = '&#10074;&#10074;';
+  if (trimVideo.currentTime < state.trimStart || trimVideo.currentTime > state.trimEnd) {
+    trimVideo.currentTime = state.trimStart;
+  }
+});
+trimVideo.addEventListener('pause', () => { ccPlayBtn.innerHTML = '&#9654;'; ccPlaybar.innerHTML = '&#9654;'; });
+ccPlayBtn.addEventListener('click', () => {
+  if (trimVideo.paused) { trimVideo.currentTime = state.trimStart; trimVideo.play(); }
+  else { trimVideo.pause(); }
+});
+trimVideo.addEventListener('click', () => {
+  if (trimVideo.paused) trimVideo.play(); else trimVideo.pause();
+});
+ccPlaybar.addEventListener('click', () => {
+  if (trimVideo.paused) { trimVideo.currentTime = state.trimStart; trimVideo.play(); }
+  else { trimVideo.pause(); }
+});
+
+// ── live audio mix preview (mirror source + bgm onto the playing video) ──
+const liveBgm = document.getElementById('live-bgm');
+function liveBgmLevel() { return state.bgm.volume * (state.ducking ? 0.45 : 1); }
+function liveBgmPos() { return Math.max(0, trimVideo.currentTime - (state.bgm.start || 0)); }
+trimVideo.addEventListener('play', () => {
+  if (state.bgm && state.bgm.url && !trimVideo.paused) {
+    liveBgm.volume = liveBgmLevel();
+    liveBgm.currentTime = liveBgmPos();
+    liveBgm.play();
+  }
+});
+trimVideo.addEventListener('pause', () => { liveBgm.pause(); });
+trimVideo.addEventListener('timeupdate', () => {
+  if (!state.bgm || !state.bgm.url) return;
+  liveBgm.volume = liveBgmLevel();
+  if (!liveBgm.paused) liveBgm.currentTime = liveBgmPos();
+});
+trimVideo.addEventListener('ended', () => { liveBgm.pause(); });
+
+// ── ruler: click / drag to scrub ──
+rfRuler.addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  dragging = 'scrub';
+  seek(timeFromEvent(e));
+});
+
+// ── track: click to seek, drag to cut (lasso), click a gap to restore it ──
+rfTrack.addEventListener('pointerdown', (e) => {
+  if (e.target.closest('.rf-handle')) return;
+  if (e.target.closest('.rf-cut')) return;
+  e.preventDefault();
+  lassoActive = true;
+  lassoMoved = false;
+  lassoX0 = e.clientX;
+  lassoStart = clamp(timeFromEvent(e), state.trimStart, state.trimEnd);
+  lassoCur = lassoStart;
+  rfLasso.classList.add('on');
+  updateLasso(e);
+});
+rfTrack.addEventListener('click', (e) => {
+  if (e.target.closest('.rf-handle')) return;
+  const gap = e.target.closest('.rf-cut');
+  if (gap) {
+    const i = parseInt(gap.dataset.i, 10);
+    if (!isNaN(i)) { state.cuts.splice(i, 1); renderCuts(); }
+    return;
+  }
+});
+
+// ── pointer event plumbing ──
+window.addEventListener('pointermove', (e) => { onTimelineMove(e); onStageMove(e); });
+window.addEventListener('pointerup', endDrag);
+
+trimHandleStart.addEventListener('pointerdown', (e) => beginTrimDrag(e, 'start'));
+trimHandleEnd.addEventListener('pointerdown', (e) => beginTrimDrag(e, 'end'));
+hookGrip.addEventListener('pointerdown', (e) => { if (!lassoActive) beginTrimDrag(e, 'hookgrip'); });
+hookEl.addEventListener('pointerdown', (e) => beginOverlayDrag(e, 'hook'));
+document.getElementById('hook-resize').addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  resizeDrag = true;
+  hookEl.classList.add('resizing');
+  document.body.style.cursor = 'ew-resize';
+});
+logoEl.addEventListener('pointerdown', (e) => beginOverlayDrag(e, 'logo'));
+
+// ── undo / reset ──
+btnUndo.addEventListener('click', () => {
+  if (state.cuts.length) { state.cuts.pop(); renderCuts(); }
+});
+trimReset.addEventListener('click', () => {
+  state.trimStart = 0;
+  state.trimEnd = trimDuration;
+  state.cuts = [];
+  state.hook.dur = Math.min(3, Math.max(0.5, trimDuration));
+  renderTrim();
+  seek(state.trimStart);
+});
+
+// ── hook editor bindings ──
+document.getElementById('hook-text').addEventListener('input', (e) => {
+  state.hook.text = e.target.value;
+  hookShown = false;
+  clearInterval(hookRevealTimer);
+  applyHookStyle();
+  updateHookVisibility();
+});
+document.getElementById('hook-size').addEventListener('input', (e) => { state.hook.size = parseInt(e.target.value, 10); applyHookStyle(); });
+document.getElementById('hook-color').addEventListener('input', (e) => { state.hook.color = e.target.value; applyHookStyle(); });
+document.getElementById('hook-bgcolor').addEventListener('input', (e) => { state.hook.bgColor = e.target.value; applyHookStyle(); });
+document.getElementById('hook-bgalpha').addEventListener('input', (e) => {
+  state.hook.bgAlpha = parseInt(e.target.value, 10) / 100;
+  applyHookStyle();
+});
+document.getElementById('hook-stroke').addEventListener('input', (e) => {
+  state.hook.stroke = parseInt(e.target.value, 10);
+  const activePreset = document.querySelector('#hook-presets button.active');
+  if (activePreset) activePreset.classList.remove('active');
+  applyHookStyle();
+});
+document.getElementById('hook-bold').addEventListener('change', (e) => { state.hook.bold = e.target.checked; applyHookStyle(); });
+document.getElementById('hook-uppercase').addEventListener('change', (e) => {
+  state.hook.uppercase = e.target.checked;
+  hookShown = false;
+  applyHookStyle();
+  updateHookVisibility();
+});
+document.getElementById('hook-anim').addEventListener('change', (e) => {
+  state.hook.animation = e.target.value;
+  hookShown = false;
+  clearInterval(hookRevealTimer);
+  updateHookVisibility();
+});
+
+const HOOK_PRESETS = {
+  clean:  { bold: false, stroke: 0, bgAlpha: 0.45, uppercase: false },
+  stroke: { bold: true, stroke: 6, bgAlpha: 0.0, uppercase: false, strokeColor: '#000000', strokeAlpha: 0.9 },
+  pill:   { bold: true, stroke: 0, bgAlpha: 0.6, uppercase: false },
+  impact: { bold: true, stroke: 4, bgAlpha: 0.55, uppercase: true },
+};
+function syncHookControls() {
+  document.getElementById('hook-bgalpha').value = Math.round(state.hook.bgAlpha * 100);
+  document.getElementById('hook-stroke').value = state.hook.stroke;
+  document.getElementById('hook-bold').checked = state.hook.bold;
+  document.getElementById('hook-uppercase').checked = state.hook.uppercase;
+}
+document.querySelectorAll('#hook-presets button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const p = HOOK_PRESETS[btn.dataset.preset];
+    if (!p) return;
+    Object.assign(state.hook, p);
+    syncHookControls();
+    document.querySelectorAll('#hook-presets button').forEach(b => b.classList.toggle('active', b === btn));
+    hookShown = false;
+    applyHookStyle();
+    updateHookVisibility();
+  });
+});
+document.querySelectorAll('.rf-pos[data-pos]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const y = btn.dataset.pos === 'top' ? 12 : btn.dataset.pos === 'center' ? 50 : 88;
+    state.hook.y = y;
+    state.hook.x = 50;
+    applyHookStyle();
+  });
+});
+
+// ── watermark / logo ──
+const logoFile = document.getElementById('logo-file');
+const logoUploadBtn = document.getElementById('logo-upload');
+logoUploadBtn.addEventListener('click', () => logoFile.click());
+logoFile.addEventListener('change', async () => {
+  const file = logoFile.files[0];
+  if (!file) return;
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    const resp = await fetch("{% url 'upload_logo' video_id %}", { method: 'POST', body: fd });
+    const data = await resp.json();
+    if (!resp.ok) { alert('Upload failed: ' + (data.error || resp.status)); return; }
+    state.logo = { file: data.file, url: data.url, name: file.name, x: 3, y: 3, scale: 0.12, opacity: 1.0 };
+    document.getElementById('logo-empty').hidden = true;
+    document.getElementById('logo-active').hidden = false;
+    document.getElementById('logo-thumb').src = data.url;
+    document.getElementById('logo-scale').value = 12;
+    document.getElementById('logo-opacity').value = 100;
+    applyLogoStyle();
+  } catch (err) { alert('Upload error: ' + err); }
+  logoFile.value = '';
+});
+document.getElementById('logo-scale').addEventListener('input', (e) => {
+  if (!state.logo) return;
+  state.logo.scale = parseInt(e.target.value, 10) / 100;
+  applyLogoStyle();
+});
+document.getElementById('logo-opacity').addEventListener('input', (e) => {
+  if (!state.logo) return;
+  state.logo.opacity = parseInt(e.target.value, 10) / 100;
+  applyLogoStyle();
+});
+document.querySelectorAll('.rf-pos[data-logo]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (!state.logo) return;
+    const rect = logoEl.getBoundingClientRect();
+    const stageRect = stageRef.getBoundingClientRect();
+    const wPct = (rect.width / stageRect.width) * 100;
+    const hPct = (rect.height / stageRect.height) * 100;
+    const margin = 3;
+    const kind = btn.dataset.logo;
+    if (kind === 'tl') { state.logo.x = margin; state.logo.y = margin; }
+    else if (kind === 'tr') { state.logo.x = 100 - wPct - margin; state.logo.y = margin; }
+    else if (kind === 'br') { state.logo.x = 100 - wPct - margin; state.logo.y = 100 - hPct - margin; }
+    else if (kind === 'cb') { state.logo.x = 50 - wPct / 2; state.logo.y = 100 - hPct - margin; }
+    applyLogoStyle();
+  });
+});
+document.getElementById('logo-remove').addEventListener('click', () => {
+  state.logo = null;
+  document.getElementById('logo-empty').hidden = false;
+  document.getElementById('logo-active').hidden = true;
+  applyLogoStyle();
+});
+
+// ── audio mixer ──
+document.getElementById('src-volume').addEventListener('input', (e) => {
+  state.sourceVolume = parseInt(e.target.value, 10) / 100;
+  trimVideo.volume = state.sourceVolume;
+});
+const bgmFile = document.getElementById('bgm-file');
+document.getElementById('bgm-upload').addEventListener('click', () => bgmFile.click());
+bgmFile.addEventListener('change', async () => {
+  const file = bgmFile.files[0];
+  if (!file) return;
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    const resp = await fetch("{% url 'upload_audio' video_id %}", { method: 'POST', body: fd });
+    const data = await resp.json();
+    if (!resp.ok) { alert('Upload failed: ' + (data.error || resp.status)); return; }
+    state.bgm = { file: data.file, url: data.url, name: file.name, start: 0, volume: 0.15 };
+    document.getElementById('bgm-empty').hidden = true;
+    document.getElementById('bgm-active').hidden = false;
+    document.getElementById('bgm-name').textContent = file.name;
+    document.getElementById('bgm-volume').value = 15;
+    document.getElementById('bgm-start').value = 0;
+    liveBgm.src = data.url;
+    liveBgm.load();
+    liveBgm.volume = liveBgmLevel();
+  } catch (err) { alert('Upload error: ' + err); }
+  bgmFile.value = '';
+});
+document.getElementById('bgm-volume').addEventListener('input', (e) => {
+  if (state.bgm) { state.bgm.volume = parseInt(e.target.value, 10) / 100; liveBgm.volume = liveBgmLevel(); }
+});
+document.getElementById('bgm-start').addEventListener('input', (e) => {
+  if (state.bgm) { state.bgm.start = Math.max(0, parseFloat(e.target.value) || 0); if (!liveBgm.paused) liveBgm.currentTime = liveBgmPos(); }
+});
+document.getElementById('bgm-duck').addEventListener('change', (e) => {
+  state.ducking = e.target.checked;
+  if (state.bgm) liveBgm.volume = liveBgmLevel();
+});
+document.getElementById('bgm-remove').addEventListener('click', () => {
+  state.bgm = null;
+  state.ducking = false;
+  liveBgm.pause();
+  liveBgm.removeAttribute('src');
+  liveBgm.load();
+  document.getElementById('bgm-empty').hidden = false;
+  document.getElementById('bgm-active').hidden = true;
+});
+
+// ── export ──
+function serializeLayers() {
+  const text = [];
+  if (state.hook.text.trim()) {
+    const h = state.hook;
+    text.push({
+      text: (state.hook.lines || []).join('\n'), start: hookStart(), end: hookEnd(),
+      size: h.size, color: h.color,
+      bgColor: h.bgColor, bgAlpha: h.bgAlpha, pad: h.bgAlpha > 0 ? 22 : 0,
+      bold: h.bold, stroke: h.stroke,
+      strokeColor: h.strokeColor, strokeAlpha: h.strokeAlpha,
+      uppercase: h.uppercase, animation: h.animation,
+      x: h.x, y: h.y,
+    });
+  }
+  const audio = state.bgm ? [{ file: state.bgm.file, start: state.bgm.start, volume: state.bgm.volume }] : [];
+  return JSON.stringify({
+    text: text,
+    audio: audio,
+    logo: state.logo ? { file: state.logo.file, x: state.logo.x, y: state.logo.y, scale: state.logo.scale, opacity: state.logo.opacity } : null,
+    cuts: state.cuts,
+    ducking: state.ducking,
+    source_volume: state.sourceVolume,
+  });
+}
+
+document.getElementById('trim-save').addEventListener('click', (e) => {
+  document.getElementById('trim-start-input').value = state.trimStart.toFixed(3);
+  document.getElementById('trim-end-input').value = state.trimEnd.toFixed(3);
+  document.getElementById('trim-layers-input').value = serializeLayers();
+  ccChip.textContent = '\u23F3 Rendering\u2026';
+  ccChip.classList.add('show');
+});
+
+// ── keyboard ──
+window.addEventListener('keydown', (e) => {
+  if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT')) return;
+  if (e.code === 'Space') {
+    e.preventDefault();
+    if (trimVideo.paused) { trimVideo.currentTime = state.trimStart; trimVideo.play(); }
+    else { trimVideo.pause(); }
+  }
+  if (e.key === 'Escape' && lassoActive) {
+    lassoActive = false;
+    lassoMoved = false;
+    rfLasso.classList.remove('on');
+  }
+  if (e.key === 'Delete' || e.key === 'Backspace') {
+    if (state.cuts.length) { state.cuts.pop(); renderCuts(); }
+  }
+});
+
+// ── filmstrip ──
+function buildFilmstrip() {
+  const frames = 12;
+  const canvas = document.createElement('canvas');
+  canvas.width = 36; canvas.height = 64;
+  const ctx = canvas.getContext('2d');
+  let done = 0;
+  for (let i = 0; i < frames; i++) {
+    const t = (i / (frames - 1)) * trimDuration;
+    const fn = () => {
+      trimVideo.currentTime = t;
+      trimVideo.onseeked = () => {
+        ctx.drawImage(trimVideo, 0, 0, canvas.width, canvas.height);
+        const div = document.createElement('div');
+        div.className = 'frame';
+        div.style.backgroundImage = 'url(' + canvas.toDataURL() + ')';
+        ccFilmstrip.appendChild(div);
+        done++;
+        if (done === frames) {
+          trimVideo.currentTime = state.trimStart;
+          renderTrim();
+        }
+      };
+    };
+    setTimeout(fn, i * 80);
+  }
+}
+
+if (trimDuration > 0) {
+  trimVideo.addEventListener('loadedmetadata', () => {
+    buildFilmstrip();
+    buildTicks();
+    renderTrim();
+    applyHookStyle();
+    applyLogoStyle();
+  });
+}
+buildTicks();
+renderTrim();
+applyHookStyle();
+applyLogoStyle();
+</script>
+{% endblock %}

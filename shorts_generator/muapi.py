@@ -27,9 +27,9 @@ def submit(endpoint: str, payload: Dict[str, Any], retries: int = 3) -> str:
     """POST to /api/v1/{endpoint} and return the request_id; retry transient errors."""
     url = f"{MUAPI_BASE_URL}/{endpoint.lstrip('/')}"
     last_err: Optional[Exception] = None
-    for _ in range(retries):
+    for attempt in range(retries):
         try:
-            resp = requests.post(url, json=payload, headers=_headers(), timeout=120)
+            resp = requests.post(url, json=payload, headers=_headers(), timeout=120, verify=True)
             if resp.status_code >= 400:
                 raise MuAPIError(f"{endpoint} submit failed [{resp.status_code}]: {resp.text}")
             data = resp.json()
@@ -37,9 +37,21 @@ def submit(endpoint: str, payload: Dict[str, Any], retries: int = 3) -> str:
             if not request_id:
                 raise MuAPIError(f"{endpoint} response had no request_id: {data}")
             return str(request_id)
-        except (requests.Timeout, requests.ConnectionError) as e:
+        except (requests.Timeout, requests.ConnectionError, requests.exceptions.SSLError) as e:
             last_err = e
-            time.sleep(2)
+            if attempt < retries - 1:
+                time.sleep(2)
+        except KeyboardInterrupt:
+            # Re-raise keyboard interrupt immediately
+            raise
+    
+    # If SSL error, provide helpful message
+    if isinstance(last_err, requests.exceptions.SSLError):
+        raise MuAPIError(
+            f"{endpoint} SSL error: {last_err}\n"
+            "Try installing certifi: pip install --upgrade certifi\n"
+            "Or check your internet connection and firewall settings."
+        )
     raise MuAPIError(f"{endpoint} submit failed after {retries} retries: {last_err}")
 
 
@@ -47,15 +59,27 @@ def fetch_result(request_id: str, retries: int = 3) -> Dict[str, Any]:
     """GET the latest result for a request_id; retry on transient timeouts."""
     url = f"{MUAPI_BASE_URL}/predictions/{request_id}/result"
     last_err: Optional[Exception] = None
-    for _ in range(retries):
+    for attempt in range(retries):
         try:
-            resp = requests.get(url, headers=_headers(), timeout=90)
+            resp = requests.get(url, headers=_headers(), timeout=90, verify=True)
             if resp.status_code >= 400:
                 raise MuAPIError(f"poll failed [{resp.status_code}]: {resp.text}")
             return resp.json()
-        except (requests.Timeout, requests.ConnectionError) as e:
+        except (requests.Timeout, requests.ConnectionError, requests.exceptions.SSLError) as e:
             last_err = e
-            time.sleep(2)
+            if attempt < retries - 1:
+                time.sleep(2)
+        except KeyboardInterrupt:
+            # Re-raise keyboard interrupt immediately
+            raise
+    
+    # If SSL error, provide helpful message
+    if isinstance(last_err, requests.exceptions.SSLError):
+        raise MuAPIError(
+            f"poll SSL error: {last_err}\n"
+            "Try installing certifi: pip install --upgrade certifi\n"
+            "Or check your internet connection and firewall settings."
+        )
     raise MuAPIError(f"poll failed after {retries} retries: {last_err}")
 
 

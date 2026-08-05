@@ -38,7 +38,7 @@ Built for creators, agencies, and developers who don't want to pay $20–$300/mo
 ## Features
 
 - **🎬 YouTube In, Vertical Out**: Hand it any YouTube URL — get back N viral-ready 9:16 mp4s
-- **🔀 Two Modes — API (fast) or Local (offline)**: Default `--mode api` uses MuAPI for download/transcription/cropping; `--mode local` runs entirely on your machine with `yt-dlp`, `faster-whisper`, and `ffmpeg`/`opencv`, and lets you pick OpenAI or Gemini for highlight ranking
+- **🔀 Two Modes — Local (default) or API**: Default `--mode local` runs entirely on your machine with `yt-dlp`, `faster-whisper`, and `ffmpeg`/`opencv`, and lets you pick OpenAI or Gemini for highlight ranking. `--mode api` is kept for reference and uses MuAPI for download/transcription/cropping.
 - **🤖 Virality-Aware Highlight Selection**: Clips ranked on hooks, emotional peaks, opinion bombs, revelation moments, conflict, quotable lines, story peaks, and practical value — not just generic "interesting"
 - **📈 Score + Hook + Reason for Every Clip**: Each highlight comes with a viral score, an opening hook line, and a one-sentence explanation of why it works
 - **🎤 Whisper Transcription, Your Choice**: Cloud (`/openai-whisper` via MuAPI) or local (`faster-whisper`, CPU or CUDA) — same downstream output shape
@@ -60,7 +60,7 @@ Don't want to self-host? The [AI Clipping API](https://muapi.ai/playground/ai-cl
 ### Prerequisites
 
 - Python 3.10+
-- For **API mode (default)**: a MuAPI key — powers download, transcription, highlight ranking, and clipping in a single dependency
+- For **API mode** (`--mode api`): a MuAPI key — powers download, transcription, highlight ranking, and clipping in a single dependency
 - For **Local mode** (`--mode local`): `ffmpeg` on your PATH and an LLM API key (`OPENAI_API_KEY` or `GEMINI_API_KEY`; only the LLM step is remote)
 
 ### Steps
@@ -88,7 +88,7 @@ Don't want to self-host? The [AI Clipping API](https://muapi.ai/playground/ai-cl
 
    Create a `.env` file in the project root:
    ```bash
-   # API mode (default)
+   # Local mode (default)
    MUAPI_API_KEY=your_muapi_key_here
 
    # Local mode (--mode local)
@@ -104,16 +104,16 @@ Don't want to self-host? The [AI Clipping API](https://muapi.ai/playground/ai-cl
 
 ## Usage
 
-### Single video (API mode — default)
+### Single video (Local mode — default)
 
 ```bash
 python main.py "https://www.youtube.com/watch?v=VIDEO_ID"
 ```
 
-### Single video (Local mode — runs offline except for the LLM call)
+### Single video (API mode — kept for reference)
 
 ```bash
-python main.py "https://www.youtube.com/watch?v=VIDEO_ID" --mode local
+python main.py "https://www.youtube.com/watch?v=VIDEO_ID" --mode api
 ```
 
 Local mode writes the rendered shorts to `./output/short_01.mp4`, `short_02.mp4`, … (override with `LOCAL_OUTPUT_DIR`).
@@ -172,7 +172,7 @@ xargs -a urls.txt -I{} python main.py "{}"
 
 | Flag | Default | Notes |
 |------|---------|-------|
-| `--mode` | `api` | `api` (MuAPI, fast, no setup) or `local` (remote URL, `file://`, or local path + faster-whisper + LLM provider + ffmpeg) |
+| `--mode` | `local` | `local` (default, yt-dlp + faster-whisper + LLM provider + ffmpeg) or `api` (MuAPI, kept for reference) |
 | `--num-clips` | `3` | How many shorts to render |
 | `--aspect-ratio` | `9:16` | Any ratio; `9:16` for TikTok/Reels, `1:1` for square |
 | `--format` | `720` | Source download resolution: `360` / `480` / `720` / `1080` |
