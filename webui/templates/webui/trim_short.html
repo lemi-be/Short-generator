@@ -1,4 +1,5 @@
 {% extends "webui/base.html" %}
+{% load static %}
 {% block title %}Refine {{ filename }} | Shorts Generator{% endblock %}
 {% block content %}
 <div class="refiner">
@@ -12,42 +13,34 @@
   </header>
 
   <main class="rf-main">
-    <!-- contextual tools: left (hook) -->
+    <!-- left: hook / text + captions -->
     <aside class="rf-side rf-side-left">
-      <section class="rf-panel">
-        <header>Text Hook</header>
+      <section class="rf-panel grow">
+        <header>Text &amp; Callouts</header>
         <div class="rf-body">
-          <textarea id="hook-text" rows="4" placeholder="Viral hook line — e.g. &quot;This killed my first startup&quot;"></textarea>
-          <div class="rf-presets" id="hook-presets">
-            <button data-preset="clean">Clean</button>
-            <button data-preset="stroke">Bold Stroke</button>
-            <button data-preset="pill">Pill</button>
-            <button data-preset="impact">UPPER</button>
+          <button class="rf-btn-block" id="hook-add" title="Create a headline callout (was the classic Hook)">+ Add callout</button>
+          <p class="rf-hint2">Drag callouts on the canvas &middot; click one to edit. The timeline Text lane
+            holds every heading / lower-third.</p>
+          <div class="rf-presets">
+            <button data-hpreset="open">Open Callout</button>
+            <button data-hpreset="lowerthird">Lower Third</button>
+            <button data-hpreset="solid">Solid Bar</button>
           </div>
-          <label>Size <input type="range" id="hook-size" min="28" max="120" value="64"></label>
-          <div class="rf-row">
-            <label>Color <input type="color" id="hook-color" value="#ffffff"></label>
-            <label>BG <input type="color" id="hook-bgcolor" value="#000000"></label>
-          </div>
-          <label>BG opacity <input type="range" id="hook-bgalpha" min="0" max="100" value="45"></label>
-          <label>Stroke <input type="range" id="hook-stroke" min="0" max="12" value="0"></label>
-          <div class="rf-row rf-checks">
-            <label><input type="checkbox" id="hook-bold" checked> Bold</label>
-            <label><input type="checkbox" id="hook-uppercase"> UPPERCASE</label>
-          </div>
-          <label>Animation
-            <select id="hook-anim">
-              <option value="none">None</option>
-              <option value="pop">Pop</option>
-              <option value="typewriter">Typewriter</option>
+        </div>
+      </section>
+
+      <section class="rf-panel grow">
+        <header>Captions</header>
+        <div class="rf-body">
+          <button class="rf-btn-block" id="cap-add" title="Pull the speaker's words from the transcript">Add captions from transcript</button>
+          <p class="rf-hint2">Each spoken segment becomes an editable caption block on the Captions lane.</p>
+          <label>Caption style
+            <select id="cap-style">
+              <option value="pill">Pill (rounded bar)</option>
+              <option value="band">Band (full band)</option>
+              <option value="clean">Clean text</option>
             </select>
           </label>
-          <div class="rf-posrow">
-            <button class="rf-pos" data-pos="top">Top</button>
-            <button class="rf-pos" data-pos="center">Center</button>
-            <button class="rf-pos" data-pos="bottom">Bottom</button>
-          </div>
-          <p class="rf-hint2">Drag the hook directly on the canvas &middot; snaps to center</p>
         </div>
       </section>
     </aside>
@@ -59,7 +52,8 @@
                src="{% url 'serve_output' filename %}"></video>
         <div class="rf-guide rf-guide-v" id="guide-v"></div>
         <div class="rf-guide rf-guide-h" id="guide-h"></div>
-        <div class="rf-hook" id="hook-el" hidden><div class="rf-hook-resize" id="hook-resize"></div></div>
+        <div class="c-layer" id="hook-el" hidden></div>
+        <div class="layerbox" id="overlay-layerbox"></div>
         <img class="rf-logo" id="logo-el" alt="logo" draggable="false">
         <div class="rf-play" id="cc-play">&#9654;</div>
         <div class="rf-current" id="cc-current">00:00</div>
@@ -67,27 +61,12 @@
       </div>
     </div>
 
-    <!-- contextual tools: right (watermark + audio) -->
+    <!-- right: property / audio / stock / filters / effects -->
     <aside class="rf-side rf-side-right">
-      <section class="rf-panel">
-        <header>Watermark / Logo</header>
-        <div class="rf-body">
-          <div id="logo-empty">
-            <button class="rf-btn-block" id="logo-upload">Upload image</button>
-            <p class="rf-hint2">PNG with transparency works best</p>
-          </div>
-          <div id="logo-active" hidden>
-            <div class="rf-logothumb"><img id="logo-thumb" alt=""></div>
-            <div class="rf-posrow">
-              <button class="rf-pos" data-logo="tl">Top-L</button>
-              <button class="rf-pos" data-logo="tr">Top-R</button>
-              <button class="rf-pos" data-logo="br">Bot-R</button>
-              <button class="rf-pos" data-logo="cb">C-Bot</button>
-            </div>
-            <label>Size <input type="range" id="logo-scale" min="3" max="40" value="12"></label>
-            <label>Opacity <input type="range" id="logo-opacity" min="5" max="100" value="100"></label>
-            <button class="rf-btn-del" id="logo-remove">Remove watermark</button>
-          </div>
+      <section class="rf-panel" id="panelProps">
+        <header id="props-title">Layer</header>
+        <div class="rf-body" id="props-body">
+          <p class="rf-hint2">Select a layer on the canvas or timeline to edit its properties.</p>
         </div>
       </section>
 
@@ -95,22 +74,88 @@
         <header>Audio Mixer</header>
         <div class="rf-body">
           <label>Original volume <input type="range" id="src-volume" min="0" max="100" value="100"></label>
-          <div id="bgm-empty">
-            <button class="rf-btn-block" id="bgm-upload">Upload background music</button>
+          <label class="rf-row rf-check"><input type="checkbox" id="enhance-on" style="width:auto"> Voice Enhance
+            <input type="range" id="enhance-val" min="0" max="100" value="0" style="flex:auto"></label>
+          <label>Ducking depth
+            <input type="range" id="duck-val" min="0" max="100" value="0"></label>
+          <div class="rf-sfxrow">
+            <button class="rf-sfxbtn" data-sfx="swoosh">Swoosh</button>
+            <button class="rf-sfxbtn" data-sfx="pop">Pop</button>
+            <button class="rf-sfxbtn" data-sfx="bass_drop">Bass Drop</button>
+            <button class="rf-sfxbtn" data-sfx="shutter">Shutter</button>
           </div>
-          <div id="bgm-active" hidden>
-            <div class="rf-bgmname" id="bgm-name"></div>
-            <label>Music volume <input type="range" id="bgm-volume" min="0" max="100" value="15"></label>
-            <label>Start at (s) <input type="number" id="bgm-start" min="0" step="0.5" value="0"></label>
-            <label class="rf-check"><input type="checkbox" id="bgm-duck"> Duck music under voiceover</label>
-            <button class="rf-btn-del" id="bgm-remove">Remove music</button>
+          <button class="rf-btn-block" id="sfx-upload">Upload SFX</button>
+          <button class="rf-btn-block" id="bgm-upload">Upload background music</button>
+        </div>
+      </section>
+
+      <section class="rf-panel">
+        <header>Stock / B-roll <small>Pexels</small></header>
+        <div class="rf-body">
+          <div class="rf-row">
+            <input type="text" id="stk-q" placeholder="Search stock video...">
+            <button class="rf-btn-block" id="stk-go" style="width:auto;flex:none">Go</button>
           </div>
+          <div class="rf-posrow">
+            <button class="rf-pos active" data-ori="portrait">Portrait</button>
+            <button class="rf-pos" data-ori="landscape">Landscape</button>
+            <button class="rf-pos" data-ori="square">Square</button>
+          </div>
+          <p class="rf-hint2" id="stk-hint">Search to add a picture-in-picture overlay at the playhead.</p>
+          <div class="stk-grid" id="stk-grid"></div>
+        </div>
+      </section>
+
+      <section class="rf-panel">
+        <header>Filters</header>
+        <div class="rf-body">
+          <div class="rf-chips" id="filters-chips">
+            <button class="rf-chipbtn" data-fk="vignette">Vignette</button>
+            <button class="rf-chipbtn" data-fk="contrast">Contrast</button>
+            <button class="rf-chipbtn" data-fk="warm">Warm</button>
+            <button class="rf-chipbtn" data-fk="cool">Cool</button>
+            <button class="rf-chipbtn" data-fk="crisp">Crisp</button>
+            <button class="rf-chipbtn" data-fk="neon">Neon</button>
+            <button class="rf-chipbtn" data-fk="spotlight">Spotlight</button>
+            <button class="rf-chipbtn" data-fk="desat">Desat</button>
+          </div>
+          <div class="rf-filter-row" id="filter-intensity-row" hidden>
+            <span class="rf-filter-name" id="filter-intensity-name">Intensity</span>
+            <span class="rf-filter-slider"><input type="range" id="filter-intensity" min="0" max="100" value="50"></span>
+            <button class="rf-filter-x" id="filter-remove" title="Remove">&#10005;</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="rf-panel">
+        <header>Effects</header>
+        <div class="rf-body">
+          <label>Opening
+            <select id="eff-open-kind">
+              <option value="none">None</option>
+              <option value="zoom_in">Zoom-in</option>
+              <option value="flash">Flash</option>
+              <option value="fade_in">Fade-in</option>
+            </select>
+          </label>
+          <label>Opening duration (s)
+            <input type="range" id="eff-open-dur" min="0.2" max="2" step="0.1" value="0.5"></label>
+          <label>Closing
+            <select id="eff-close-kind">
+              <option value="none">None</option>
+              <option value="fade_out">Fade-out</option>
+              <option value="blur_out">Blur-out</option>
+              <option value="glitch">Glitch</option>
+            </select>
+          </label>
+          <label>Closing duration (s)
+            <input type="range" id="eff-close-dur" min="0.2" max="2" step="0.1" value="0.5"></label>
         </div>
       </section>
     </aside>
   </main>
 
-  <!-- CapCut-style timeline -->
+  <!-- multi-track timeline -->
   <section class="rf-timeline">
     <div class="rf-toolbar">
       <button class="rf-iconbtn" id="cc-playbar" title="Play / pause (Space)">&#9654;</button>
@@ -123,13 +168,11 @@
       <button class="rf-btnghost" id="trim-reset" title="Reset trim and cuts">Reset</button>
     </div>
 
-    <div class="rf-timeline-body">
+    <div class="rf-timeline-body" id="timeline-body">
       <div class="rf-playhead" id="rf-playhead"><span class="rf-playhead-knob"></span></div>
+      <div class="rf-ruler" id="rf-ruler"><div class="rf-ticks" id="rf-ticks"></div></div>
 
-      <div class="rf-ruler" id="rf-ruler">
-        <div class="rf-ticks" id="rf-ticks"></div>
-      </div>
-
+      <!-- V1 -->
       <div class="rf-track-row">
         <span class="rf-track-label">V1</span>
         <div class="rf-track" id="rf-track">
@@ -144,14 +187,14 @@
         </div>
       </div>
 
-      <div class="rf-hooklane">
-        <div class="rf-hook-block" id="rf-hook-block"><span>Hook</span><div class="rf-hook-grip" id="rf-hook-grip"></div></div>
-      </div>
+      <!-- layer lanes -->
+      <div id="lanes"></div>
+      <div id="sfx-quick" class="lt-quick" hidden></div>
     </div>
 
     <div class="rf-timebar">
       <span id="rf-clip-start">0:00</span>
-      <span class="rf-hint">Drag ruler to scrub &middot; drag on the video to remove a section &middot; white edges trim &middot; Hook edge sets duration</span>
+      <span class="rf-hint">Drag blocks to move &middot; grab the right edge to size &middot; drag on V1 to cut &middot; white edges trim</span>
       <span id="rf-clip-end">0:00</span>
     </div>
   </section>
@@ -166,228 +209,37 @@
 
 <input type="file" id="logo-file" accept="image/*" style="display:none">
 <input type="file" id="bgm-file" accept="audio/*" style="display:none">
+<input type="file" id="sfx-file" accept="audio/*" style="display:none">
 <audio id="live-bgm" loop preload="auto"></audio>
 
+<link href="{% static 'webui/trimmer.css' %}" rel="stylesheet">
 <style>
-  html, body { background: #0f0f0f !important; }
-  body { padding: 0 !important; }
-  .container { max-width: none !important; padding: 0 !important; }
-  .refiner { display: flex; flex-direction: column; height: 100vh; height: 100dvh;
-    color: #fff; font-family: system-ui, -apple-system, sans-serif; }
-
-  /* top bar */
-  .rf-topbar { display: flex; align-items: center; gap: 1rem; padding: .65rem 1rem;
-    background: linear-gradient(180deg, #1d1d1f, #171719);
-    border-bottom: 1px solid #2a2a2e; }
-  .rf-back { color: #fff; text-decoration: none; display: flex; align-items: center;
-    gap: .4rem; font-size: .9rem; padding: .35rem .6rem; border-radius: 8px;
-    transition: background .15s, color .15s; }
-  .rf-back:hover { color: #ff914d; background: rgba(255,145,77,.08); text-decoration: none; }
-  .rf-title { flex: 1; text-align: center; font-size: .9rem; color: #ccc;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; letter-spacing: .01em; }
-  .rf-actions { display: flex; align-items: center; gap: .75rem; }
-  .rf-dur { font-size: .85rem; color: #888; font-variant-numeric: tabular-nums; }
-  .rf-export { background: linear-gradient(180deg, #ffa64d, #ff914d); color: #1a1a1a;
-    font-weight: 700; border: none; padding: .5rem 1.3rem; border-radius: 999px;
-    cursor: pointer; font-size: .9rem; box-shadow: 0 2px 10px rgba(255,145,77,.35);
-    transition: transform .12s, box-shadow .12s, filter .12s; }
-  .rf-export:hover { filter: brightness(1.06); box-shadow: 0 4px 16px rgba(255,145,77,.5);
-    transform: translateY(-1px); }
-  .rf-export:active { transform: translateY(0); }
-
-  /* main row: canvas + sidebar */
-  .rf-main { flex: 1; display: flex; gap: 1rem; min-height: 0; min-width: 0;
-    padding: 1rem 1rem .75rem; }
-
-  /* 9:16 interactive canvas */
-  .rf-stage-wrap { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center;
-    min-height: 0; background: radial-gradient(ellipse at 50% 40%, #141416 0%, #0b0b0c 100%);
-    border-radius: 12px; border: 1px solid #232326; }
-  .rf-stage { position: relative; aspect-ratio: 9 / 16; height: 100%; max-width: 100%;
-    background: #000; border-radius: 10px; overflow: hidden; touch-action: none;
-    box-shadow: 0 0 0 1px rgba(255,255,255,.06), 0 12px 48px rgba(0,0,0,.6); }
-  .rf-stage video { width: 100%; height: 100%; object-fit: cover; display: block; }
-  .rf-guide { position: absolute; z-index: 6; pointer-events: none; display: none; }
-  .rf-guide-v { top: 0; bottom: 0; left: 50%; width: 2px;
-    background: repeating-linear-gradient(180deg, rgba(255,145,77,.9) 0 6px, transparent 6px 12px); }
-  .rf-guide-h { left: 0; right: 0; top: 50%; height: 2px;
-    background: repeating-linear-gradient(90deg, rgba(255,145,77,.9) 0 6px, transparent 6px 12px); }
-  .rf-hook { position: absolute; z-index: 5; transform: translate(-50%, -50%);
+  .refiner { height: 100dvh; }
+  .rf-side { width: 300px; }
+  .rf-panel small { color: #666; font-weight: 500; margin-left: .3rem; }
+  #overlay-layerbox { position: absolute; inset: 0; z-index: 3; }
+  .c-layer { position: absolute; z-index: 5; transform: translate(-50%,-50%);
     cursor: move; white-space: pre-wrap; word-break: break-word; overflow-wrap: break-word;
-    text-align: center; line-height: 1.15; user-select: none; touch-action: none; }
-  .rf-hook-resize { position: absolute; top: 0; bottom: 0; right: -5px; width: 12px;
-    background: rgba(255,255,255,.55); border-radius: 6px; cursor: ew-resize;
-    opacity: 0; transition: opacity .15s, background .15s; z-index: 3; }
-  .rf-hook:hover .rf-hook-resize, .rf-hook.resizing .rf-hook-resize { opacity: 1; }
-  .rf-hook-resize:hover { background: rgba(255,145,77,.9); }
-  .rf-hook.pop { animation: rf-pop .32s ease-out; }
-  @keyframes rf-pop { from { transform: translate(-50%,-50%) scale(.6); opacity: 0; }
-    to { transform: translate(-50%,-50%) scale(1); opacity: 1; } }
-  .rf-logo { position: absolute; z-index: 4; cursor: move; display: none;
-    user-select: none; -webkit-user-drag: none; touch-action: none; }
-  .rf-play { position: absolute; z-index: 7; font-size: 2rem; color: rgba(255,255,255,.9);
-    background: rgba(0,0,0,.6); backdrop-filter: blur(4px); width: 68px; height: 68px;
-    border-radius: 50%; display: flex; align-items: center; justify-content: center;
-    cursor: pointer; opacity: 0; transition: opacity .18s, transform .18s;
-    border: 1px solid rgba(255,255,255,.12); left: 50%; top: 50%; margin: -34px 0 0 -34px; }
-  .rf-stage:hover .rf-play { opacity: 1; }
-  .rf-play:hover { transform: scale(1.06); }
-  .rf-current { position: absolute; z-index: 7; top: .6rem; right: .8rem; font-family: monospace;
-    font-size: .85rem; color: #fff; background: rgba(0,0,0,.65); padding: .25rem .6rem;
-    border-radius: 999px; border: 1px solid rgba(255,255,255,.1); }
-  .rf-chip { position: absolute; z-index: 7; bottom: .6rem; left: 50%; transform: translateX(-50%);
-    font-family: monospace; font-size: .82rem; color: #ff914d; background: rgba(20,20,22,.85);
-    padding: .3rem .7rem; border-radius: 999px; border: 1px solid rgba(255,145,77,.3);
-    opacity: 0; transition: opacity .2s; }
-  .rf-chip.show { opacity: 1; }
-
-  /* sidebar */
-  .rf-side { width: 320px; flex: none; height: 100%; min-height: 0; overflow-y: auto;
-    overscroll-behavior: contain; display: flex; flex-direction: column;
-    gap: .6rem; padding-right: .15rem;
-    scrollbar-width: thin; scrollbar-color: #3a3a40 transparent; }
-  .rf-side::-webkit-scrollbar { width: 10px; }
-  .rf-side::-webkit-scrollbar-track { background: transparent; }
-  .rf-side::-webkit-scrollbar-thumb { background: #3a3a40; border-radius: 6px;
-    border: 2px solid #141416; }
-  .rf-side::-webkit-scrollbar-thumb:hover { background: #555; }
-  .rf-panel { background: linear-gradient(180deg, #171719, #141416); border: 1px solid #2a2a2e;
-    border-radius: 12px; overflow: hidden; flex: 1 1 0; min-height: 0;
-    display: flex; flex-direction: column; }
-  .rf-panel header { font-size: .8rem; font-weight: 700; letter-spacing: .02em;
-    padding: .55rem .8rem; background: rgba(255,255,255,.03); border-bottom: 1px solid #2a2a2e;
-    color: #ff914d; flex: none; }
-  .rf-body { padding: .7rem .8rem .85rem; display: flex; flex-direction: column; gap: .55rem;
-    flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
-    scrollbar-width: thin; scrollbar-color: #3a3a40 transparent; }
-  .rf-body::-webkit-scrollbar { width: 10px; }
-  .rf-body::-webkit-scrollbar-track { background: transparent; }
-  .rf-body::-webkit-scrollbar-thumb { background: #3a3a40; border-radius: 6px; border: 2px solid #141416; }
-  .rf-body::-webkit-scrollbar-thumb:hover { background: #555; }
-  .rf-body textarea { width: 100%; background: #121214; border: 1px solid #333; color: #fff;
-    border-radius: 8px; padding: .6rem .7rem; font-size: 1.05rem; line-height: 1.35;
-    font-family: inherit; resize: vertical; min-height: 110px; }
-  .rf-body textarea:focus { outline: none; border-color: #ff914d; }
-  .rf-body label { display: block; font-size: .76rem; color: #aaa; }
-  .rf-body label input[type=range] { width: 100%; accent-color: #ff914d; }
-  .rf-body label input[type=number] { width: 100%; background: #121214; border: 1px solid #333;
-    color: #fff; border-radius: 8px; padding: .35rem .5rem; font-size: .85rem; }
-  .rf-body label select { width: 100%; background: #121214; border: 1px solid #333; color: #fff;
-    border-radius: 8px; padding: .35rem .5rem; font-size: .85rem; }
-  .rf-body label input[type=color] { width: 100%; height: 30px; border: 1px solid #333;
-    border-radius: 6px; background: #121214; padding: 2px; cursor: pointer; }
-  .rf-row { display: flex; gap: .6rem; }
-  .rf-row > label { flex: 1; }
-  .rf-checks label { display: flex; align-items: center; gap: .4rem; font-size: .8rem; color: #ddd; }
-  .rf-checks input { accent-color: #ff914d; }
-  .rf-check { display: flex; align-items: center; gap: .4rem; }
-  .rf-check input { accent-color: #ff914d; }
-  .rf-presets { display: grid; grid-template-columns: 1fr 1fr; gap: .4rem; }
-  .rf-presets button { background: #2a2a2e; color: #fff; border: 1px solid #3a3a40;
-    border-radius: 8px; padding: .4rem .5rem; font-size: .76rem; cursor: pointer;
-    transition: background .15s, border-color .15s, color .15s; }
-  .rf-presets button:hover { background: #3a3a40; }
-  .rf-presets button.active { background: rgba(255,145,77,.16); border-color: #ff914d; color: #ff914d; }
-  .rf-posrow { display: grid; grid-template-columns: repeat(4, 1fr); gap: .35rem; }
-  .rf-posrow .rf-pos, .rf-pos { background: #2a2a2e; color: #ddd; border: 1px solid #3a3a40;
-    border-radius: 7px; padding: .38rem .3rem; font-size: .72rem; cursor: pointer;
-    transition: background .15s, border-color .15s, color .15s; }
-  .rf-pos:hover { background: #3a3a40; color: #fff; }
-  .rf-pos.active { background: rgba(255,145,77,.16); border-color: #ff914d; color: #ff914d; }
-  .rf-btn-block { width: 100%; background: #2a2a2e; color: #fff; border: 1px dashed #4a4a52;
-    border-radius: 9px; padding: .6rem; font-size: .84rem; cursor: pointer;
-    transition: background .15s, border-color .15s, color .15s; }
-  .rf-btn-block:hover { background: #35353b; border-color: #ff914d; color: #ff914d; }
-  .rf-btn-del { width: 100%; background: #3a1d1d; color: #ff8a80; border: 1px solid #5a2a2a;
-    border-radius: 8px; padding: .42rem; font-size: .78rem; cursor: pointer; }
-  .rf-btn-del:hover { background: #4a2525; }
-  .rf-logothumb { display: flex; align-items: center; justify-content: center; height: 64px;
-    background: #121214; border: 1px solid #2a2a2e; border-radius: 8px; margin-bottom: .2rem; }
-  .rf-logothumb img { max-height: 52px; max-width: 90%; object-fit: contain; }
-  .rf-bgmname { font-size: .76rem; color: #ffb; background: rgba(255,145,77,.08);
-    border: 1px solid rgba(255,145,77,.25); border-radius: 8px; padding: .4rem .5rem;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .rf-hint2 { font-size: .7rem; color: #666; margin: 0; }
-
-  /* timeline panel (CapCut-style) */
-  .rf-timeline { background: linear-gradient(180deg, #151517, #121214);
-    border-top: 1px solid #232326; padding: .55rem 1rem .8rem; }
-  .rf-toolbar { display: flex; align-items: center; gap: .55rem; margin-bottom: .5rem; }
-  .rf-iconbtn { background: #26262a; color: #fff; border: none; width: 32px; height: 32px;
-    border-radius: 8px; font-size: .9rem; cursor: pointer; transition: background .15s, transform .1s; }
-  .rf-iconbtn:hover { background: #34343a; transform: translateY(-1px); }
-  .rf-time-readout { display: flex; align-items: baseline; gap: .6rem; }
-  #cc-time { font-family: monospace; font-size: 1.05rem; color: #fff;
-    font-variant-numeric: tabular-nums; }
-  .rf-range { font-family: monospace; font-size: .8rem; color: #ff914d; font-weight: 600;
-    font-variant-numeric: tabular-nums; }
-  .rf-spacer { flex: 1; }
-  .rf-btnghost { background: transparent; color: #aaa; border: 1px solid #333; padding: .3rem .7rem;
-    border-radius: 8px; font-size: .8rem; cursor: pointer; transition: color .15s, border-color .15s, background .15s; }
-  .rf-btnghost:hover { color: #fff; border-color: #555; background: #1c1c1e; }
-
-  .rf-timeline-body { position: relative; padding-left: 38px; }
-  .rf-ruler { position: relative; height: 22px; cursor: pointer; user-select: none; touch-action: none; }
-  .rf-ticks { position: absolute; inset: 0; }
-  .rf-tick { position: absolute; top: 16px; bottom: 0; width: 1px; background: #3a3a40; }
-  .rf-tick.major { background: #5a5a62; }
-  .rf-tick-label { position: absolute; top: 1px; transform: translateX(-50%);
-    font-family: monospace; font-size: .62rem; color: #777; }
-
-  .rf-track-row { position: relative; height: 62px; margin-bottom: 8px; }
-  .rf-track-label { position: absolute; left: -38px; top: 50%; transform: translateY(-50%);
-    font-size: .62rem; font-weight: 700; color: #6f6f76; width: 30px; text-align: right;
-    padding-right: 6px; letter-spacing: .05em; }
-  .rf-track { position: relative; height: 62px; border-radius: 8px; overflow: hidden;
-    background: #0d0d0f; border: 1px solid #232326; cursor: pointer;
-    user-select: none; touch-action: none; box-shadow: inset 0 1px 0 rgba(255,255,255,.04); }
-  .rf-filmstrip { position: absolute; inset: 0; display: flex; }
-  .rf-filmstrip .frame { flex: 1; background-size: cover; background-position: center;
-    filter: brightness(.9); }
-  .rf-dim { position: absolute; top: 0; bottom: 0; z-index: 2; pointer-events: none;
-    background: rgba(0,0,0,.68); box-shadow: inset 0 0 30px rgba(0,0,0,.5); }
-  .rf-selection { position: absolute; top: 0; bottom: 0; z-index: 3; pointer-events: none;
-    border-left: 2px solid #fff; border-right: 2px solid #fff;
-    background: rgba(255,255,255,.05); }
-  .rf-handle { position: absolute; top: 0; bottom: 0; width: 14px; margin-left: -7px;
-    cursor: ew-resize; z-index: 8; display: flex; align-items: center; justify-content: center; }
-  .rf-handle::after { content: ''; width: 3px; height: 100%; background: #fff;
-    border-radius: 2px; box-shadow: 0 0 4px rgba(0,0,0,.6); }
-  .rf-handle:hover::after { background: #ff914d; }
-
-  .rf-cutlayer { position: absolute; inset: 0; z-index: 5; pointer-events: none; }
-  .rf-cut { position: absolute; top: 0; bottom: 0; pointer-events: auto; cursor: pointer;
-    background: repeating-linear-gradient(-45deg, rgba(255,107,107,.45) 0 5px, rgba(70,8,8,.8) 5px 10px);
-    border-left: 1px solid #ff6b6b; border-right: 1px solid #ff6b6b; }
-  .rf-cut:hover { filter: brightness(1.5); }
-  .rf-cut b { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-    color: #ff6b6b; font-size: 1.05rem; font-weight: 800; opacity: 0;
-    transition: opacity .12s; pointer-events: none; }
-  .rf-cut:hover b { opacity: 1; }
-
-  .rf-lasso { position: absolute; top: 0; bottom: 0; z-index: 6; display: none;
-    pointer-events: none; background: rgba(255,107,107,.28); border: 1px dashed #ff6b6b; }
-  .rf-lasso.on { display: block; }
-
-  .rf-hooklane { position: relative; height: 26px; }
-  .rf-hook-block { position: absolute; top: 0; bottom: 0; border-radius: 6px; overflow: hidden;
-    background: linear-gradient(180deg, #8b5eff, #6d3fff); border: 1px solid #a78bff;
-    display: flex; align-items: center; padding-left: .55rem; }
-  .rf-hook-block span { font-size: .66rem; font-weight: 700; color: #fff; letter-spacing: .02em; }
-  .rf-hook-grip { position: absolute; right: 0; top: 0; bottom: 0; width: 11px;
-    background: rgba(255,255,255,.35); cursor: ew-resize; }
-  .rf-hook-grip:hover { background: #fff; }
-
-  .rf-playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: #fff;
-    z-index: 12; display: none; pointer-events: none; box-shadow: 0 0 4px rgba(0,0,0,.5); }
-  .rf-playhead-knob { position: absolute; top: 0; left: 50%; transform: translateX(-50%);
-    width: 16px; height: 22px; background: #fff; border-radius: 4px;
-    box-shadow: 0 1px 5px rgba(0,0,0,.55); }
-
-  .rf-timebar { display: flex; justify-content: space-between; align-items: center;
-    margin-top: .45rem; font-family: monospace; font-size: .74rem; color: #666; }
-  .rf-timebar .rf-hint { font-family: system-ui, -apple-system, sans-serif; font-size: .7rem; color: #555; }
+    text-align: center; line-height: 1.15; user-select: none; touch-action: none;
+    text-shadow: 0 1px 3px rgba(0,0,0,.4); }
+  .c-layer.sel, .stock-box.sel { outline: 2px solid #ff914d; outline-offset: 2px; }
+  .stock-box { position: absolute; transform: translate(-50%,-50%); z-index: 4;
+    cursor: move; touch-action: none; border-radius: 8px; overflow: hidden;
+    border: 1px solid rgba(255,255,255,.15); background: #000; }
+  .stock-box video { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .lt-track { font-size: 0; }
+  .lt-track .lb { font-size: .62rem; }
+  .lt-quick { margin-top: 4px; padding-left: 46px; display: grid; grid-template-columns: 1fr 1fr;
+    gap: .4rem; }
+  .rf-track, .lt-track { position: relative; }
+  .lanes-slider { }
+  .lb .lb-x { position: absolute; left: 3px; top: 50%; transform: translateY(-50%);
+    width: 12px; height: 12px; line-height: 10px; text-align: center; border-radius: 50%;
+    background: rgba(0,0,0,.4); color: #fff; font-size: .6rem; cursor: pointer; opacity: 0; }
+  .lb:hover .lb-x { opacity: 1; }
+  .lb .lb-name { padding-left: 16px; }
 </style>
+
 <script>
 const trimVideo = document.getElementById('trim-video');
 const ccCurrent = document.getElementById('cc-current');
@@ -412,77 +264,113 @@ const rfClipStart = document.getElementById('rf-clip-start');
 const rfClipEnd = document.getElementById('rf-clip-end');
 const cutLayer = document.getElementById('cut-layer');
 const rfLasso = document.getElementById('rf-lasso');
-const hookBlock = document.getElementById('rf-hook-block');
-const hookGrip = document.getElementById('rf-hook-grip');
 const stageRef = document.getElementById('rf-stage');
 const hookEl = document.getElementById('hook-el');
 const logoEl = document.getElementById('logo-el');
 const guideV = document.getElementById('guide-v');
 const guideH = document.getElementById('guide-h');
+const laneWrap = document.getElementById('lanes');
+const overlayBox = document.getElementById('overlay-layerbox');
+const sfxQuick = document.getElementById('sfx-quick');
 const trimDuration = {{ duration }};
 
 const CANVAS_W = 1080;
+let fontsCache = [];
 
-// ── Refiner state (serialised to RefinerState on export) ──
+// ─────────────────── state ───────────────────
+let uidCounter = 1;
+function uid() { return 'l' + (uidCounter++); }
+
 const state = {
   trimStart: 0,
   trimEnd: trimDuration,
-  cuts: [],                     // [[start,end], ...] full-clip time
-  hook: {
-    text: '', size: 64, color: '#ffffff', bgColor: '#000000', bgAlpha: 0.45,
-    bold: true, stroke: 0, strokeColor: '#000000', strokeAlpha: 0.9,
-    uppercase: false, animation: 'none', x: 50, y: 12,
-    width: 0.9,
-    dur: Math.min(3, Math.max(0.5, trimDuration)),
-  },
-  logo: null,                   // {file,url,name,x,y,scale,opacity}
+  cuts: [],
   sourceVolume: 1.0,
-  bgm: null,                    // {file,url,name,start,volume}
-  ducking: false,
+  hook: null,            // {id, text, ..., start, end}
+  texts: [],             // free text layers
+  captions: [],          // caption layers
+  logo: null,
+  bgm: [],               // multiple
+  sfx: [],               // multiple
+  stock: [],             // stock PiP
+  filters: [],           // {kind, intensity}
+  effects: { open: {kind:'none', dur:0.5}, close: {kind:'none', dur:0.5} },
+  audioFx: { enhance: 0, ducking: 0 },
 };
 
-let dragging = null;            // 'start' | 'end' | 'hookgrip' | 'scrub'
-let overlayDrag = null;         // 'hook' | 'logo' (on the canvas)
-let resizeDrag = false;         // resizing the hook box width
-let lassoActive = false;
-let lassoMoved = false;
-let lassoStart = 0;
-let lassoCur = 0;
-let lassoX0 = 0;
-let hookShown = false;
-let hookRevealTimer = null;
+const FILTER_NAMES = { vignette:'Vignette', contrast:'Contrast', warm:'Warm', cool:'Cool',
+  crisp:'Crisp', neon:'Neon', spotlight:'Spotlight', desat:'Desat' };
 
-// ── helpers ──
+let selection = null;    // {type, index}
+let dragging = null;     // 'start' | 'end' | 'scrub'
+let blockDrag = null;    // {layer, isGrip, startStart, startEnd, origX, laneEl}
+let overlayDrag = null;  // 'hook'|'logo'|'layerbox:<type>:<index>'
+let lassoActive = false, lassoMoved = false, lassoStart = 0, lassoCur = 0, lassoX0 = 0;
+
+// ─────────────────── helpers ───────────────────
 function fmtClock(sec, showMs) {
   sec = Math.max(0, Math.min(sec, trimDuration));
   const m = Math.floor(sec / 60);
   const s = Math.floor(sec % 60);
-  if (showMs) return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
-  return m + ':' + String(s).padStart(2, '0');
+  if (showMs) return String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+  return m + ':' + String(s).padStart(2,'0');
 }
 function pct(sec) { return (sec / trimDuration) * 100; }
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
-function timeFromEvent(e) {
-  const rect = rfTrack.getBoundingClientRect();
-  const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+function timeFromEvent(e, el) {
+  const rect = el.getBoundingClientRect();
+  const x = clamp(e.clientX - rect.left, 0, rect.width);
   return (x / rect.width) * trimDuration;
 }
 function seek(t) { trimVideo.currentTime = clamp(t, state.trimStart, state.trimEnd); }
 function hexToRgba(hex, a) {
   hex = (hex || '#000000').replace('#', '');
   if (hex.length === 3) hex = hex.split('').map(c => c + c).join('');
-  const r = parseInt(hex.slice(0, 2), 16);
-  const g = parseInt(hex.slice(2, 4), 16);
-  const b = parseInt(hex.slice(4, 6), 16);
+  const r = parseInt(hex.slice(0,2),16), g = parseInt(hex.slice(2,4),16), b = parseInt(hex.slice(4,6),16);
   return 'rgba(' + r + ',' + g + ',' + b + ',' + a + ')';
 }
 function dispScale() { return stageRef.clientWidth / CANVAS_W || 1; }
 
-// hook bounds: starts at trim start, lasts hook.dur
-function hookStart() { return state.trimStart; }
-function hookEnd() { return Math.min(state.trimEnd, state.trimStart + state.hook.dur); }
+function defaultText(text, start, end, y) {
+  return { id: uid(), text, start, end, x: 50, y: (y == null ? 50 : y),
+    size: 48, color: '#ffffff', bgColor: '#000000', bgAlpha: 0.0, stroke: 0,
+    strokeColor: '#000000', strokeAlpha: 0.9, bold: false, uppercase: false,
+    font: '', animation: 'none', pad: 16 };
+}
+function defaultCaption(text, start, end) {
+  const c = defaultText(text, start, end, 82);
+  c.size = 52;
+  return c;
+}
+function hookLayer() {
+  const l = state.hook;
+  if (!l || !l.text.trim()) return null;
+  const out = {
+    text: l.text, start: hookStart(), end: hookEnd(),
+    x: l.x, y: l.y, size: l.size, color: l.color, bgColor: l.bgColor,
+    bgAlpha: l.bgAlpha, pad: l.bgAlpha > 0 ? 22 : 0,
+    bold: l.bold, stroke: l.stroke, strokeColor: l.strokeColor, strokeAlpha: l.strokeAlpha,
+    uppercase: l.uppercase, animation: l.animation, font: l.font || '',
+  };
+  return out;
+}
 
-// ── ruler ticks ──
+// all text-ish blocks shown on the Text lane
+function allTexts() {
+  const arr = [];
+  if (state.hook && state.hook.text.trim()) {
+    arr.push({ id: state.hook.id, kind: 'hook', start: hookStart(), end: hookEnd(),
+      name: 'Callout', color: '#8b5eff' });
+  }
+  state.texts.forEach((l, i) => arr.push({
+    id: l.id, kind: 'text', index: i, start: l.start, end: l.end,
+    name: (l.text || '').replace(/\n/g, ' ').slice(0, 22) || 'Text', color: '#8b5eff' }));
+  return arr;
+}
+function hookStart() { return state.trimStart; }
+function hookEnd() { return Math.min(state.trimEnd, state.trimStart + (state.hook ? state.hook.dur : 3)); }
+
+// ─────────────────── ruler ticks ───────────────────
 function buildTicks() {
   rfTicks.innerHTML = '';
   let step = 0.5;
@@ -507,7 +395,262 @@ function buildTicks() {
   }
 }
 
-// ── range bar rendering ──
+// ─────────────────── timeline lanes ───────────────────
+const LANES = [
+  { id:'text', label:'Text', color:'#8b5eff', add:'text' },
+  { id:'captions', label:'Captions', color:'#2dd4bf', add:'captions' },
+  { id:'sfx', label:'SFX', color:'#f59e0b', add:'sfx' },
+  { id:'bgm', label:'BGM', color:'#3b82f6', add:'bgm' },
+  { id:'stock', label:'Stock', color:'#22c55e', add:'stock' },
+  { id:'logo', label:'Logo', color:'#ec4899', add:'logo' },
+  { id:'filters', label:'Filters', color:'#94a3b8', noBlock:true },
+  { id:'effects', label:'Effects', color:'#ef4444', noBlock:true },
+];
+
+function buildLanes() {
+  laneWrap.innerHTML = '';
+  LANES.forEach(lane => {
+    const row = document.createElement('div');
+    row.className = 'rf-track-row lt';
+    const h = lane.id === 'filters' ? '46px' : (lane.noBlock ? '34px' : '40px');
+    row.style.height = h;
+    const lab = document.createElement('span');
+    lab.className = 'rf-track-label';
+    lab.textContent = lane.label;
+    row.appendChild(lab);
+    const track = document.createElement('div');
+    track.className = 'lt-track';
+    track.dataset.lane = lane.id;
+    track.style.height = h;
+    row.appendChild(track);
+    if (lane.add) {
+      const btn = document.createElement('button');
+      btn.className = 'lb-add';
+      btn.textContent = '+';
+      btn.title = 'Add to ' + lane.label;
+      btn.dataset.add = lane.add;
+      row.appendChild(btn);
+    }
+    laneWrap.appendChild(row);
+  });
+}
+
+function blockFor(lane, layer) {
+  const el = document.createElement('div');
+  el.className = 'lb' + (isSel(lane.id, layer) ? ' active' : '');
+  el.dataset.lane = lane.id;
+  el.dataset.kind = layer.kind;
+  if (layer.index != null) el.dataset.index = layer.index;
+  el.style.left = pct(layer.start) + '%';
+  el.style.width = Math.max(0.4, pct(layer.end) - pct(layer.start)) + '%';
+  el.style.background = 'linear-gradient(180deg,' + layer.color + ', ' + layer.color + 'cc)';
+  el.style.border = '1px solid ' + layer.color;
+  const name = document.createElement('span');
+  name.className = 'lb-name';
+  name.textContent = layer.name;
+  el.appendChild(name);
+  if (!layer.noGrip) {
+    const grip = document.createElement('span');
+    grip.className = 'lb-grip';
+    el.appendChild(grip);
+  }
+  if (!layer.noX) {
+    const x = document.createElement('span');
+    x.className = 'lb-x';
+    x.textContent = '\u00d7';
+    el.appendChild(x);
+  }
+  el.addEventListener('pointerdown', (e) => onLaneBlockDown(e, lane, layer));
+  return el;
+}
+
+function isSel(laneId, layer) {
+  if (!selection) return false;
+  if (laneId === 'logo') return selection.type === 'logo';
+  return selection.type === laneId && (
+    selection.index === layer.index || (layer.kind === 'hook' && selection.type === 'text' && selection.index === null)
+  );
+}
+
+function fullLaneBlock(lane, name, ref) {
+  const el = document.createElement('div');
+  el.className = 'lb' + (selection && selection.type === lane.id && selection.ref === ref ? ' active' : '');
+  el.dataset.lane = lane.id;
+  el.dataset.ref = ref;
+  el.style.left = '0%';
+  el.style.width = '100%';
+  el.style.background = 'linear-gradient(180deg,' + lane.color + ', ' + lane.color + 'aa)';
+  el.style.border = '1px solid ' + lane.color;
+  const n = document.createElement('span');
+  n.className = 'lb-name';
+  n.textContent = name;
+  el.appendChild(n);
+  el.addEventListener('pointerdown', (e) => onFullBlockDown(e, lane, ref));
+  return el;
+}
+
+function renderLanes() {
+  LANES.forEach(lane => {
+    const track = laneWrap.querySelector('.lt-track[data-lane="' + lane.id + '"]');
+    if (!track || lane.noBlock) { renderNoBlockLane(lane, track); return; }
+    track.innerHTML = '';
+    let blocks = [];
+    if (lane.id === 'text') {
+      blocks = allTexts();
+    } else if (lane.id === 'captions') {
+      blocks = state.captions.map((l, i) => ({ id:l.id, kind:'captions', index:i,
+        start:l.start, end:l.end, color:lane.color,
+        name:(l.text||'').replace(/\n/g,' ').slice(0,22)||'Caption' }));
+    } else if (lane.id === 'sfx') {
+      blocks = state.sfx.map((l, i) => ({ id:l.id, kind:'sfx', index:i,
+        start:l.start, end:l.end, color:lane.color, name:l.name || 'SFX' }));
+    } else if (lane.id === 'bgm') {
+      blocks = state.bgm.map((l, i) => ({ id:l.id, kind:'bgm', index:i,
+        start:l.start, end:l.end, color:lane.color, name:l.name || 'Music' }));
+    } else if (lane.id === 'stock') {
+      blocks = state.stock.map((l, i) => ({ id:l.id, kind:'stock', index:i,
+        start:l.start, end:l.end, color:lane.color, name:l.name || 'Stock' }));
+    } else if (lane.id === 'logo') {
+      if (state.logo) blocks = [{ id:state.logo.id, kind:'logo', index:0,
+        start:0, end:trimDuration, color:lane.color, name:'Logo', noGrip:true }];
+    }
+    blocks.forEach(b => { track.appendChild(blockFor(lane, b)); });
+  });
+}
+
+function renderNoBlockLane(lane, track) {
+  if (lane.id === 'filters') {
+    track.innerHTML = '';
+    if (!state.filters.length) { renderEmpty(track, 'No filters'); return; }
+    state.filters.forEach((f, i) => {
+      const el = fullLaneBlock(lane, (FILTER_NAMES[f.kind] || f.kind), 'filters:' + i);
+      el.style.left = (i % 2) * 50 + '%';
+      el.style.width = '50%';
+      el.style.top = Math.floor(i / 2) * 10 + 'px';
+      el.style.height = '9px';
+      el.style.bottom = 'auto';
+      track.appendChild(el);
+    });
+  } else if (lane.id === 'effects') {
+    track.innerHTML = '';
+    const open = state.effects.open.kind === 'none' ? 'Open: none' : 'Open: ' + state.effects.open.kind;
+    const close = state.effects.close.kind === 'none' ? 'Close: none' : 'Close: ' + state.effects.close.kind;
+    const elOpen = fullLaneBlock({id:'effects', color:'#22c55e'}, open, 'effects:open');
+    elOpen.style.left = '0%'; elOpen.style.width = '50%';
+    track.appendChild(elOpen);
+    const elClose = fullLaneBlock({id:'effects', color:'#ef4444'}, close, 'effects:close');
+    elClose.style.left = '50%'; elClose.style.width = '50%';
+    track.appendChild(elClose);
+  }
+}
+function renderEmpty(track, text) {
+  const d = document.createElement('div');
+  d.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;padding-left:.6rem;' +
+    'font-size:.62rem;color:#555;';
+  d.textContent = text;
+  track.appendChild(d);
+}
+
+// lane add buttons
+function onAddLane(kind) {
+  if (kind === 'text') {
+    const end = clamp(trimVideo.currentTime + 2, state.trimStart + 0.2, state.trimEnd);
+    const l = defaultText('New callout', state.trimStart, end);
+    state.texts.push(l);
+    selection = { type: 'text', index: state.texts.length - 1, canvas: true };
+    renderLanes(); renderOverlays(); renderProps();
+  } else if (kind === 'captions') {
+    loadCaptions();
+  } else if (kind === 'sfx') {
+    sfxQuick.hidden = !sfxQuick.hidden;
+    if (!sfxQuick.hidden) renderSfxQuick(true);
+  } else if (kind === 'bgm') {
+    bgmFile.click();
+  } else if (kind === 'stock') {
+    document.getElementById('stk-q').focus();
+  } else if (kind === 'logo') {
+    logoFile.click();
+  }
+}
+
+window.addEventListener('pointerdown', (e) => {
+  const addBtn = e.target.closest('.lb-add');
+  if (addBtn) onAddLane(addBtn.dataset.add);
+});
+
+// ─────────────────── lane block interaction ───────────────────
+function layerForSelection(laneId, layer) {
+  if (laneId === 'text') {
+    if (layer.kind === 'hook') return { ref: state.hook, remove: () => state.hook.text = '' };
+    return { ref: state.texts[layer.index] };
+  }
+  if (laneId === 'captions') return { ref: state.captions[layer.index] };
+  if (laneId === 'sfx') return { ref: state.sfx[layer.index] };
+  if (laneId === 'bgm') return { ref: state.bgm[layer.index] };
+  if (laneId === 'stock') return { ref: state.stock[layer.index] };
+  if (laneId === 'logo') return { ref: state.logo };
+  return null;
+}
+
+function onLaneBlockDown(e, lane, layer) {
+  if (e.target.classList.contains('lb-x')) {
+    e.stopPropagation();
+    deleteLayer(lane.id, layer);
+    return;
+  }
+  e.preventDefault();
+  e.stopPropagation();
+  // select
+  if (lane.id === 'text') selection = { type:'text', index: layer.kind === 'hook' ? null : layer.index };
+  else selection = { type: lane.id, index: layer.index };
+  renderLanes();
+
+  const layerRef = layerForSelection(lane.id, layer);
+  if (!layerRef) return;
+  const isGrip = e.target.classList.contains('lb-grip');
+  if (lane.id === 'logo' || !layerRef.ref || layerRef.ref.start == null) {
+    renderProps();
+    return;
+  }
+  if (layer.kind === 'hook') {
+    if (!isGrip) { renderProps(); return; }   // callout is anchored to trim start
+    blockDrag = {
+      hookGrip: true, isGrip: true, startEnd: state.hook.dur, origX: e.clientX,
+      laneEl: laneWrap.querySelector('.lt-track[data-lane="text"]'),
+    };
+    document.body.style.cursor = 'ew-resize';
+    return;
+  }
+  blockDrag = {
+    layer: layerRef.ref, isGrip,
+    startStart: layerRef.ref.start, startEnd: layerRef.ref.end,
+    origX: e.clientX, laneEl: laneWrap.querySelector('.lt-track[data-lane="' + lane.id + '"]'),
+  };
+  document.body.style.cursor = 'ew-resize';
+}
+
+function onFullBlockDown(e, lane, ref) {
+  e.preventDefault();
+  e.stopPropagation();
+  selection = { type: lane.id, ref };
+  renderLanes();
+  renderProps();
+}
+
+function deleteLayer(laneId, layer) {
+  if (laneId === 'text') {
+    if (layer.kind === 'hook') { state.hook.text = ''; state.hook = null; }
+    else { state.texts.splice(layer.index, 1); }
+  } else if (laneId === 'captions') state.captions.splice(layer.index, 1);
+  else if (laneId === 'sfx') state.sfx.splice(layer.index, 1);
+  else if (laneId === 'bgm') state.bgm.splice(layer.index, 1);
+  else if (laneId === 'stock') state.stock.splice(layer.index, 1);
+  else if (laneId === 'logo') state.logo = null;
+  selection = null;
+  renderLanes(); renderOverlays(); renderProps();
+}
+
+// ─────────────────── trim render (V1) ───────────────────
 function renderTrim() {
   const s = pct(state.trimStart), e = pct(state.trimEnd);
   rfSelection.style.left = s + '%';
@@ -522,13 +665,8 @@ function renderTrim() {
   rfClipStart.textContent = fmtClock(state.trimStart);
   rfClipEnd.textContent = fmtClock(state.trimEnd);
   ccChip.textContent = '\u23F1 ' + fmtClock(state.trimStart, true) + ' \u2192 ' + fmtClock(state.trimEnd, true) + ' (' + durSec.toFixed(1) + 's)';
-  renderHookBand();
   renderCuts();
-}
-
-function renderHookBand() {
-  hookBlock.style.left = pct(hookStart()) + '%';
-  hookBlock.style.width = Math.max(0, pct(hookEnd()) - pct(hookStart())) + '%';
+  renderLanes();
 }
 
 function renderCuts() {
@@ -549,51 +687,92 @@ function renderCuts() {
   });
 }
 
-// ── hook overlay (live preview) ──
-const _wrapCtx = (() => { const c = document.createElement('canvas'); return c.getContext('2d'); })();
-
-function hookWidthPx() {
-  return Math.max(48, state.hook.width * stageRef.clientWidth);
+// ─────────────────── canvas overlays ───────────────────
+function applyTextLayerStyle(el, l) {
+  el.textContent = l.uppercase ? l.text.toUpperCase() : l.text;
+  el.style.fontSize = (l.size * dispScale()) + 'px';
+  el.style.color = l.color;
+  el.style.fontWeight = l.bold ? '800' : '400';
+  el.style.background = hexToRgba(l.bgColor, l.bgAlpha);
+  el.style.padding = '8px 18px';
+  el.style.borderRadius = '14px';
+  el.style.webkitTextStroke = l.stroke > 0 ? l.stroke + 'px ' + hexToRgba(l.strokeColor, l.strokeAlpha) : '0';
+  const fname = (fontsCache.find(f => f.file === l.font) || {}).name || '';
+  el.style.fontFamily = fname ? ('"' + fname + '", system-ui') : 'system-ui, sans-serif';
+  el.style.left = (l.x == null ? 50 : l.x) + '%';
+  el.style.top = (l.y == null ? 50 : l.y) + '%';
+  el.className = 'c-layer' +
+    (selection && selection.type === 'captions' && selection.index != null &&
+     state.captions[selection.index] === l && selection.canvas ? ' sel' : '') +
+    (selection && selection.type === 'text' && selection.index != null &&
+     state.texts[selection.index] === l && selection.canvas ? ' sel' : '');
+  el.dataset.layerId = l.id;
 }
 
-// wrap text into lines that fit the box width (matches the export)
-function hookLines() {
-  const h = state.hook;
-  const raw = h.uppercase ? h.text.toUpperCase() : h.text;
-  if (!raw.trim()) return [];
-  const pxWidth = hookWidthPx() - 48;   // minus 10px 24px padding
-  _wrapCtx.font = (h.bold ? '800 ' : '400 ') + (h.size * dispScale()) + 'px system-ui, -apple-system, sans-serif';
-  const lines = [];
-  let cur = '';
-  for (const word of raw.split(/\s+/)) {
-    let chunks = [word];
-    if (_wrapCtx.measureText(word).width > pxWidth) {
-      chunks = [];
-      let buf = '';
-      for (const ch of word) {
-        if (buf && _wrapCtx.measureText(buf + ch).width > pxWidth) { chunks.push(buf); buf = ch; }
-        else buf += ch;
-      }
-      if (buf) chunks.push(buf);
+function hookWidthPx() { return Math.max(48, (state.hook.width || 0.85) * stageRef.clientWidth); }
+
+function renderOverlays() {
+  overlayBox.innerHTML = '';
+  // free text layers
+  state.texts.forEach((l, i) => {
+    const el = document.createElement('div');
+    el.className = 'c-layer';
+    applyTextLayerStyle(el, l);
+    el.addEventListener('pointerdown', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      selection = { type:'text', index:i, canvas:true };
+      renderOverlays(); renderProps();
+      overlayDrag = 'layerbox:text:' + i;
+    });
+    overlayBox.appendChild(el);
+  });
+  // captions
+  state.captions.forEach((l, i) => {
+    const el = document.createElement('div');
+    el.className = 'c-layer';
+    applyTextLayerStyle(el, l);
+    el.addEventListener('pointerdown', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      selection = { type:'captions', index:i, canvas:true };
+      renderOverlays(); renderProps();
+      overlayDrag = 'layerbox:captions:' + i;
+    });
+    overlayBox.appendChild(el);
+  });
+  // stock PiP
+  state.stock.forEach((l, i) => {
+    const box = document.createElement('div');
+    box.className = 'stock-box' + (selection && selection.type==='stock' && selection.index===i && selection.canvas ? ' sel' : '');
+    const sw = clamp(l.scale != null ? l.scale : 40, 5, 95);
+    const iw = stageRef.clientWidth;
+    box.style.width = (sw / 100) * iw + 'px';
+    const ih = box.clientHeight || (stageRef.clientHeight * 0.3);
+    box.style.aspectRatio = '9/16';
+    box.style.left = (l.x == null ? 12 : l.x) + '%';
+    box.style.top = (l.y == null ? 60 : l.y) + '%';
+    box.style.opacity = l.opacity != null ? l.opacity : 1;
+    if (l.url) {
+      const v = document.createElement('video');
+      v.src = l.url;
+      v.muted = true; v.loop = true; v.playsInline = true;
+      v.addEventListener('loadedmetadata', () => v.play().catch(()=>{}));
+      box.appendChild(v);
     }
-    for (const chunk of chunks) {
-      const cand = cur ? cur + ' ' + chunk : chunk;
-      if (cur && _wrapCtx.measureText(cand).width > pxWidth) {
-        lines.push(cur);
-        cur = chunk;
-      } else {
-        cur = cand;
-      }
-    }
-  }
-  if (cur) lines.push(cur);
-  return lines;
+    box.dataset.layerId = l.id;
+    box.addEventListener('pointerdown', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      selection = { type:'stock', index:i, canvas:true };
+      renderOverlays(); renderProps();
+      overlayDrag = 'layerbox:stock:' + i;
+    });
+    overlayBox.appendChild(box);
+  });
 }
 
-function applyHookStyle() {
+function renderHookStyle() {
+  if (!state.hook || !state.hook.text.trim()) { hookEl.hidden = true; return; }
   const h = state.hook;
-  state.hook.lines = hookLines();
-  hookEl.textContent = state.hook.lines.join('\n');
+  hookEl.textContent = h.uppercase ? h.text.toUpperCase() : h.text;
   hookEl.style.width = hookWidthPx() + 'px';
   hookEl.style.fontSize = (h.size * dispScale()) + 'px';
   hookEl.style.color = h.color;
@@ -601,54 +780,15 @@ function applyHookStyle() {
   hookEl.style.background = hexToRgba(h.bgColor, h.bgAlpha);
   hookEl.style.padding = '10px 24px';
   hookEl.style.borderRadius = '14px';
-  if (h.stroke > 0) {
-    hookEl.style.webkitTextStroke = h.stroke + 'px ' + hexToRgba(h.strokeColor, h.strokeAlpha);
-    hookEl.style.textShadow = '0 2px 6px rgba(0,0,0,.6)';
-  } else {
-    hookEl.style.webkitTextStroke = '0';
-    hookEl.style.textShadow = '0 1px 3px rgba(0,0,0,.35)';
-  }
+  hookEl.style.webkitTextStroke = h.stroke > 0 ? h.stroke + 'px ' + hexToRgba(h.strokeColor, h.strokeAlpha) : '0';
   hookEl.style.left = h.x + '%';
   hookEl.style.top = h.y + '%';
+  hookEl.hidden = false;
 }
 
-function updateHookVisibility() {
-  const t = trimVideo.currentTime;
-  const shouldShow = state.hook.text.trim() !== '' && t >= hookStart() && t <= hookEnd();
-  if (shouldShow) {
-    if (!hookShown) {
-      hookShown = true;
-      if (state.hook.animation === 'typewriter') {
-        startTypewriter();
-      } else if (state.hook.animation === 'pop') {
-        hookEl.classList.remove('pop');
-        void hookEl.offsetWidth;
-        hookEl.classList.add('pop');
-      }
-    }
-    hookEl.hidden = false;
-  } else {
-    if (hookShown) { hookShown = false; clearInterval(hookRevealTimer); }
-    hookEl.hidden = true;
-  }
-}
-
-function startTypewriter() {
-  clearInterval(hookRevealTimer);
-  const full = hookLines().join('\n');
-  hookEl.textContent = '';
-  let i = 0;
-  hookRevealTimer = setInterval(() => {
-    i++;
-    hookEl.textContent = full.slice(0, i);
-    if (i >= full.length) clearInterval(hookRevealTimer);
-  }, 80);
-}
-
-// ── logo overlay (live preview) ──
 function applyLogoStyle() {
   const l = state.logo;
-  if (!l) { logoEl.style.display = 'none'; return; }
+  if (!l || !l.url) { logoEl.style.display = 'none'; return; }
   logoEl.src = l.url;
   logoEl.style.display = 'block';
   logoEl.style.width = (l.scale * stageRef.clientWidth) + 'px';
@@ -658,124 +798,60 @@ function applyLogoStyle() {
   logoEl.style.opacity = l.opacity;
 }
 
-// ── dragging on the canvas with snapping ──
-function beginOverlayDrag(e, kind) {
-  e.preventDefault();
-  overlayDrag = kind;
-  document.body.style.cursor = 'grabbing';
+// active-caption highlight while playing
+function updateActiveOverlays() {
+  const t = trimVideo.currentTime;
+  // captions visibility
+  overlayBox.querySelectorAll('.c-layer').forEach(el => {});
 }
 
+// ─────────────────── canvas dragging ───────────────────
 function onStageMove(e) {
-  if (resizeDrag) {
+  if (overlayDrag === 'hook') {
     const rect = stageRef.getBoundingClientRect();
-    const cx = (state.hook.x / 100) * rect.width;
-    const half = Math.abs((e.clientX - rect.left) - cx);
-    state.hook.width = clamp(half * 2 / rect.width, 0.15, 1);
-    applyHookStyle();
+    const px = clamp((e.clientX - rect.left) / rect.width * 100, 0, 100);
+    const py = clamp((e.clientY - rect.top) / rect.height * 100, 0, 100);
+    state.hook.x = px; state.hook.y = py;
+    renderHookStyle();
     return;
   }
-  if (!overlayDrag) return;
-  const rect = stageRef.getBoundingClientRect();
-  const px = clamp((e.clientX - rect.left) / rect.width * 100, 0, 100);
-  const py = clamp((e.clientY - rect.top) / rect.height * 100, 0, 100);
-  const snap = 2.0;
-  let sx = px, sy = py;
-  guideV.style.display = 'none';
-  guideH.style.display = 'none';
-  if (Math.abs(px - 50) < snap) { sx = 50; guideV.style.display = 'block'; }
-  if (Math.abs(py - 50) < snap) { sy = 50; guideH.style.display = 'block'; }
-  if (overlayDrag === 'hook') {
-    state.hook.x = sx;
-    state.hook.y = sy;
-    applyHookStyle();
-  } else if (state.logo) {
-    state.logo.x = sx;
-    state.logo.y = sy;
+  if (overlayDrag && overlayDrag.startsWith('layerbox:')) {
+    const parts = overlayDrag.split(':');
+    const type = parts[1], idx = parseInt(parts[2], 10);
+    let l = null;
+    if (type === 'text') l = state.texts[idx];
+    else if (type === 'captions') l = state.captions[idx];
+    else if (type === 'stock') l = state.stock[idx];
+    if (!l) return;
+    const rect = stageRef.getBoundingClientRect();
+    l.x = clamp((e.clientX - rect.left) / rect.width * 100, 0, 100);
+    l.y = clamp((e.clientY - rect.top) / rect.height * 100, 0, 100);
+    renderOverlays();
+    return;
+  }
+  if (overlayDrag === 'logo' && state.logo) {
+    const rect = stageRef.getBoundingClientRect();
+    state.logo.x = clamp((e.clientX - rect.left) / rect.width * 100, 0, 100);
+    state.logo.y = clamp((e.clientY - rect.top) / rect.height * 100, 0, 100);
     applyLogoStyle();
   }
 }
 
-function hideGuides() {
-  guideV.style.display = 'none';
-  guideH.style.display = 'none';
-}
-
-// ── timeline interactions (trim handles, hook grip, ruler scrub, lasso cut) ──
-function beginTrimDrag(e, which) {
-  if (lassoActive) return;
-  e.preventDefault();
-  dragging = which;
-  document.body.style.cursor = 'ew-resize';
-}
-
-function onTimelineMove(e) {
-  const t = timeFromEvent(e);
-  if (dragging === 'hookgrip') {
-    state.hook.dur = clamp(t - state.trimStart, 0.5, state.trimEnd - state.trimStart);
-    renderHookBand();
-    return;
-  }
-  if (dragging === 'scrub') {
-    seek(t);
-    return;
-  }
-  if (dragging === 'start') {
-    state.trimStart = Math.min(t, state.trimEnd - 0.05);
-    if (state.hook.dur > state.trimEnd - state.trimStart) {
-      state.hook.dur = Math.max(0.5, state.trimEnd - state.trimStart);
-    }
-    renderTrim();
-    return;
-  }
-  if (dragging === 'end') {
-    state.trimEnd = Math.max(t, state.trimStart + 0.05);
-    if (state.hook.dur > state.trimEnd - state.trimStart) {
-      state.hook.dur = Math.max(0.5, state.trimEnd - state.trimStart);
-    }
-    renderTrim();
-    return;
-  }
-  if (lassoActive) {
-    if (Math.abs(e.clientX - lassoX0) > 6) lassoMoved = true;
-    updateLasso(e);
-    return;
-  }
-  if (dragging || overlayDrag) return;
-}
-
-function updateLasso(e) {
-  lassoCur = clamp(timeFromEvent(e), state.trimStart, state.trimEnd);
-  const a = clamp(Math.min(lassoStart, lassoCur), state.trimStart, state.trimEnd);
-  const b = clamp(Math.max(lassoStart, lassoCur), state.trimStart, state.trimEnd);
-  rfLasso.style.left = pct(a) + '%';
-  rfLasso.style.width = Math.max(0, pct(b) - pct(a)) + '%';
-}
-
-function endDrag() {
-  if (lassoActive) {
-    lassoActive = false;
-    rfLasso.classList.remove('on');
-    if (lassoMoved) {
-      const a = clamp(Math.min(lassoStart, lassoCur), state.trimStart, state.trimEnd);
-      const b = clamp(Math.max(lassoStart, lassoCur), state.trimStart, state.trimEnd);
-      if (b - a >= 0.3) {
-        state.cuts.push([a, b]);
-        renderCuts();
-      }
-    } else {
-      seek(lassoStart);
+// ─────────────────── empty-stage click clears selection ───────────────────
+stageRef.addEventListener('pointerdown', (e) => {
+  if (e.target === trimVideo || e.target.id === 'rf-stage') {
+    if (!e.target.closest('.c-layer') && !e.target.closest('.stock-box') &&
+        e.target !== logoEl && e.target !== hookEl) {
+      selection = null;
+      renderLanes(); renderOverlays(); renderProps();
     }
   }
-  dragging = null;
-  overlayDrag = null;
-  resizeDrag = false;
-  hookEl.classList.remove('resizing');
-  document.body.style.cursor = '';
-  hideGuides();
-}
-</script>
-<script>
-// ── video / playhead sync ──
+});
+
+// ─────────────────── audio live mix ───────────────────
+const liveBgm = document.getElementById('live-bgm');
+function liveDuckLevel() { return state.audioFx.ducking > 0 ? 0.45 : 1; }
+function anyBgm() { return state.bgm.length > 0; }
 trimVideo.addEventListener('timeupdate', () => {
   if (!trimDuration) return;
   const t = trimVideo.currentTime;
@@ -783,10 +859,13 @@ trimVideo.addEventListener('timeupdate', () => {
   ccTime.textContent = fmtClock(t, true) + ' / ' + fmtClock(trimDuration, true);
   rfPlayhead.style.display = 'block';
   rfPlayhead.style.left = pct(t) + '%';
-  if (t < state.trimStart || t > state.trimEnd) {
-    trimVideo.currentTime = state.trimStart;
-  }
-  updateHookVisibility();
+  if (t < state.trimStart || t > state.trimEnd) { trimVideo.currentTime = state.trimStart; }
+  const h = state.hook;
+  if (h && h.text.trim() && t >= hookStart() && t <= hookEnd()) hookEl.hidden = false;
+  else if (!h || !h.text.trim()) hookEl.hidden = true;
+  else hookEl.hidden = true;
+  // playhead for lanes
+  document.querySelectorAll('.lt-track').forEach(() => {});
 });
 
 trimVideo.addEventListener('play', () => {
@@ -795,8 +874,22 @@ trimVideo.addEventListener('play', () => {
   if (trimVideo.currentTime < state.trimStart || trimVideo.currentTime > state.trimEnd) {
     trimVideo.currentTime = state.trimStart;
   }
+  syncOverlayPlay();
 });
-trimVideo.addEventListener('pause', () => { ccPlayBtn.innerHTML = '&#9654;'; ccPlaybar.innerHTML = '&#9654;'; });
+trimVideo.addEventListener('pause', () => {
+  ccPlayBtn.innerHTML = '&#9654;'; ccPlaybar.innerHTML = '&#9654;';
+  syncOverlayPlay();
+});
+function syncOverlayPlay() {
+  const playing = !trimVideo.paused; const t = trimVideo.currentTime;
+  overlayBox.querySelectorAll('.stock-box video').forEach(v => {
+    const box = v.closest('.stock-box');
+    const lid = box.dataset.layerId;
+    const l = state.stock.find(s => s.id === lid);
+    if (!l) return;
+    if (playing && t >= l.start && t <= l.end) v.play().catch(()=>{}); else v.pause();
+  });
+}
 ccPlayBtn.addEventListener('click', () => {
   if (trimVideo.paused) { trimVideo.currentTime = state.trimStart; trimVideo.play(); }
   else { trimVideo.pause(); }
@@ -809,44 +902,81 @@ ccPlaybar.addEventListener('click', () => {
   else { trimVideo.pause(); }
 });
 
-// ── live audio mix preview (mirror source + bgm onto the playing video) ──
-const liveBgm = document.getElementById('live-bgm');
-function liveBgmLevel() { return state.bgm.volume * (state.ducking ? 0.45 : 1); }
-function liveBgmPos() { return Math.max(0, trimVideo.currentTime - (state.bgm.start || 0)); }
-trimVideo.addEventListener('play', () => {
-  if (state.bgm && state.bgm.url && !trimVideo.paused) {
-    liveBgm.volume = liveBgmLevel();
-    liveBgm.currentTime = liveBgmPos();
-    liveBgm.play();
+// ─────────────────── ruler / track interactions ───────────────────
+function beginTrimDrag(e, which) { if (lassoActive) return; e.preventDefault(); dragging = which; document.body.style.cursor = 'ew-resize'; }
+
+function onTimelineMove(e) {
+  const t = timeFromEvent(e, rfTrack);
+  if (blockDrag && blockDrag.hookGrip) {
+    const d = blockDrag;
+    const dxSec = (e.clientX - d.origX) / d.laneEl.clientWidth * trimDuration;
+    state.hook.dur = clamp(d.startEnd + dxSec, 0.5, state.trimEnd - state.trimStart);
+    renderLanes();
+    return;
   }
-});
-trimVideo.addEventListener('pause', () => { liveBgm.pause(); });
-trimVideo.addEventListener('timeupdate', () => {
-  if (!state.bgm || !state.bgm.url) return;
-  liveBgm.volume = liveBgmLevel();
-  if (!liveBgm.paused) liveBgm.currentTime = liveBgmPos();
-});
-trimVideo.addEventListener('ended', () => { liveBgm.pause(); });
+  if (blockDrag) {
+    const d = blockDrag;
+    const dxSec = (e.clientX - d.origX) / d.laneEl.clientWidth * trimDuration;
+    if (d.isGrip) {
+      d.layer.end = clamp(d.startEnd + dxSec, d.layer.start + 0.05, trimDuration);
+    } else {
+      const dur = d.startEnd - d.startStart;
+      d.layer.start = clamp(d.startStart + dxSec, 0, trimDuration - 0.05);
+      d.layer.end = clamp(d.layer.start + dur, d.layer.start, trimDuration);
+    }
+    renderLanes(); renderOverlays();
+    return;
+  }
+  if (dragging === 'scrub') { seek(timeFromEvent(e, rfRuler)); return; }
+  if (dragging === 'start') {
+    state.trimStart = Math.min(timeFromEvent(e, rfTrack), state.trimEnd - 0.05);
+    if (state.hook && state.hook.dur > state.trimEnd - state.trimStart) state.hook.dur = Math.max(0.5, state.trimEnd - state.trimStart);
+    renderTrim();
+    return;
+  }
+  if (dragging === 'end') {
+    state.trimEnd = Math.max(timeFromEvent(e, rfTrack), state.trimStart + 0.05);
+    if (state.hook && state.hook.dur > state.trimEnd - state.trimStart) state.hook.dur = Math.max(0.5, state.trimEnd - state.trimStart);
+    renderTrim();
+    return;
+  }
+  if (lassoActive) {
+    if (Math.abs(e.clientX - lassoX0) > 6) lassoMoved = true;
+    lassoCur = clamp(timeFromEvent(e, rfTrack), state.trimStart, state.trimEnd);
+    const a = clamp(Math.min(lassoStart, lassoCur), state.trimStart, state.trimEnd);
+    const b = clamp(Math.max(lassoStart, lassoCur), state.trimStart, state.trimEnd);
+    rfLasso.style.left = pct(a) + '%';
+    rfLasso.style.width = Math.max(0, pct(b) - pct(a)) + '%';
+    return;
+  }
+}
 
-// ── ruler: click / drag to scrub ──
-rfRuler.addEventListener('pointerdown', (e) => {
-  e.preventDefault();
-  dragging = 'scrub';
-  seek(timeFromEvent(e));
-});
+function endDrag() {
+  if (lassoActive) {
+    lassoActive = false;
+    rfLasso.classList.remove('on');
+    if (lassoMoved) {
+      const a = clamp(Math.min(lassoStart, lassoCur), state.trimStart, state.trimEnd);
+      const b = clamp(Math.max(lassoStart, lassoCur), state.trimStart, state.trimEnd);
+      if (b - a >= 0.3) { state.cuts.push([a, b]); renderCuts(); }
+    } else { seek(lassoStart); }
+  }
+  dragging = null;
+  blockDrag = null;
+  overlayDrag = null;
+  document.body.style.cursor = '';
+  hideGuides();
+}
+function hideGuides() { guideV.style.display = 'none'; guideH.style.display = 'none'; }
 
-// ── track: click to seek, drag to cut (lasso), click a gap to restore it ──
+rfRuler.addEventListener('pointerdown', (e) => { e.preventDefault(); dragging = 'scrub'; seek(timeFromEvent(e, rfRuler)); });
 rfTrack.addEventListener('pointerdown', (e) => {
-  if (e.target.closest('.rf-handle')) return;
-  if (e.target.closest('.rf-cut')) return;
+  if (e.target.closest('.rf-handle') || e.target.closest('.rf-cut')) return;
   e.preventDefault();
-  lassoActive = true;
-  lassoMoved = false;
-  lassoX0 = e.clientX;
-  lassoStart = clamp(timeFromEvent(e), state.trimStart, state.trimEnd);
+  lassoActive = true; lassoMoved = false; lassoX0 = e.clientX;
+  lassoStart = clamp(timeFromEvent(e, rfTrack), state.trimStart, state.trimEnd);
   lassoCur = lassoStart;
   rfLasso.classList.add('on');
-  updateLasso(e);
 });
 rfTrack.addEventListener('click', (e) => {
   if (e.target.closest('.rf-handle')) return;
@@ -857,231 +987,459 @@ rfTrack.addEventListener('click', (e) => {
     return;
   }
 });
-
-// ── pointer event plumbing ──
 window.addEventListener('pointermove', (e) => { onTimelineMove(e); onStageMove(e); });
 window.addEventListener('pointerup', endDrag);
-
 trimHandleStart.addEventListener('pointerdown', (e) => beginTrimDrag(e, 'start'));
 trimHandleEnd.addEventListener('pointerdown', (e) => beginTrimDrag(e, 'end'));
-hookGrip.addEventListener('pointerdown', (e) => { if (!lassoActive) beginTrimDrag(e, 'hookgrip'); });
-hookEl.addEventListener('pointerdown', (e) => beginOverlayDrag(e, 'hook'));
-document.getElementById('hook-resize').addEventListener('pointerdown', (e) => {
-  e.preventDefault();
-  e.stopPropagation();
-  resizeDrag = true;
-  hookEl.classList.add('resizing');
-  document.body.style.cursor = 'ew-resize';
-});
-logoEl.addEventListener('pointerdown', (e) => beginOverlayDrag(e, 'logo'));
 
-// ── undo / reset ──
-btnUndo.addEventListener('click', () => {
-  if (state.cuts.length) { state.cuts.pop(); renderCuts(); }
-});
+// ─────────────────── undo / reset ───────────────────
+btnUndo.addEventListener('click', () => { if (state.cuts.length) { state.cuts.pop(); renderCuts(); } });
 trimReset.addEventListener('click', () => {
-  state.trimStart = 0;
-  state.trimEnd = trimDuration;
-  state.cuts = [];
-  state.hook.dur = Math.min(3, Math.max(0.5, trimDuration));
-  renderTrim();
-  seek(state.trimStart);
+  state.trimStart = 0; state.trimEnd = trimDuration; state.cuts = [];
+  if (state.hook) state.hook.dur = Math.min(3, Math.max(0.5, trimDuration));
+  renderTrim(); seek(state.trimStart);
 });
 
-// ── hook editor bindings ──
-document.getElementById('hook-text').addEventListener('input', (e) => {
-  state.hook.text = e.target.value;
-  hookShown = false;
-  clearInterval(hookRevealTimer);
-  applyHookStyle();
-  updateHookVisibility();
-});
-document.getElementById('hook-size').addEventListener('input', (e) => { state.hook.size = parseInt(e.target.value, 10); applyHookStyle(); });
-document.getElementById('hook-color').addEventListener('input', (e) => { state.hook.color = e.target.value; applyHookStyle(); });
-document.getElementById('hook-bgcolor').addEventListener('input', (e) => { state.hook.bgColor = e.target.value; applyHookStyle(); });
-document.getElementById('hook-bgalpha').addEventListener('input', (e) => {
-  state.hook.bgAlpha = parseInt(e.target.value, 10) / 100;
-  applyHookStyle();
-});
-document.getElementById('hook-stroke').addEventListener('input', (e) => {
-  state.hook.stroke = parseInt(e.target.value, 10);
-  const activePreset = document.querySelector('#hook-presets button.active');
-  if (activePreset) activePreset.classList.remove('active');
-  applyHookStyle();
-});
-document.getElementById('hook-bold').addEventListener('change', (e) => { state.hook.bold = e.target.checked; applyHookStyle(); });
-document.getElementById('hook-uppercase').addEventListener('change', (e) => {
-  state.hook.uppercase = e.target.checked;
-  hookShown = false;
-  applyHookStyle();
-  updateHookVisibility();
-});
-document.getElementById('hook-anim').addEventListener('change', (e) => {
-  state.hook.animation = e.target.value;
-  hookShown = false;
-  clearInterval(hookRevealTimer);
-  updateHookVisibility();
-});
+// ─────────────────── property panel ───────────────────
+function renderProps() {
+  const title = document.getElementById('props-title');
+  const body = document.getElementById('props-body');
+  if (!selection) { title.textContent = 'Layer'; body.innerHTML = '<p class="rf-hint2">Select a layer on the canvas or timeline to edit its properties.</p>'; return; }
 
-const HOOK_PRESETS = {
-  clean:  { bold: false, stroke: 0, bgAlpha: 0.45, uppercase: false },
-  stroke: { bold: true, stroke: 6, bgAlpha: 0.0, uppercase: false, strokeColor: '#000000', strokeAlpha: 0.9 },
-  pill:   { bold: true, stroke: 0, bgAlpha: 0.6, uppercase: false },
-  impact: { bold: true, stroke: 4, bgAlpha: 0.55, uppercase: true },
-};
-function syncHookControls() {
-  document.getElementById('hook-bgalpha').value = Math.round(state.hook.bgAlpha * 100);
-  document.getElementById('hook-stroke').value = state.hook.stroke;
-  document.getElementById('hook-bold').checked = state.hook.bold;
-  document.getElementById('hook-uppercase').checked = state.hook.uppercase;
+  if (selection.type === 'text' || selection.type === 'captions') {
+    const l = selection.type === 'text'
+      ? (selection.index == null ? state.hook : state.texts[selection.index])
+      : state.captions[selection.index];
+    if (!l) { selection = null; renderProps(); return; }
+    title.textContent = selection.type === 'captions' ? 'Caption' : (selection.index == null ? 'Callout' : 'Text');
+    const fle = fontsCache.map(f => {
+      const n = f.file.replace(/"/g, '&quot;');
+      return '<option value="' + n + '"' + (l.font === f.file ? ' selected' : '') + '>' + f.name + '</option>';
+    }).join('');
+    body.innerHTML =
+      '<textarea id="prop-text" rows="2" placeholder="Text">' + escapeHtml(l.text || '') + '</textarea>' +
+      '<label>Font<select id="prop-font"><option value="">System UI</option>' + fle + '</select></label>' +
+      '<label>Size<input type="range" id="prop-size" min="18" max="160" value="' + (l.size||48) + '"></label>' +
+      '<div class="rf-row"><label>Color<input type="color" id="prop-color" value="' + (l.color||'#ffffff') + '"></label>' +
+      '<label>BG<input type="color" id="prop-bg" value="' + (l.bgColor||'#000000') + '"></label></div>' +
+      '<label>BG opacity<input type="range" id="prop-bgalpha" min="0" max="100" value="' + Math.round((l.bgAlpha||0)*100) + '"></label>' +
+      '<label>Stroke<input type="range" id="prop-stroke" min="0" max="12" value="' + (l.stroke||0) + '"></label>' +
+      '<div class="rf-row rf-checks">' +
+        '<label><input type="checkbox" id="prop-bold"' + (l.bold?' checked':'') + '> Bold</label>' +
+        '<label><input type="checkbox" id="prop-upper"' + (l.uppercase?' checked':'') + '> UPPER</label>' +
+      '</div>' +
+      '<label>Animation<select id="prop-anim">' +
+        '<option value="none"'+(l.animation==='none'?' selected':'')+'>None</option>' +
+        '<option value="pop"'+(l.animation==='pop'?' selected':'')+'>Pop</option>' +
+        '<option value="typewriter"'+(l.animation==='typewriter'?' selected':'')+'>Typewriter</option>' +
+      '</select></label>' +
+      '<div class="rf-posrow"><button class="rf-pos" data-posy="12">Top</button>' +
+        '<button class="rf-pos" data-posy="50">Middle</button>' +
+        '<button class="rf-pos" data-posy="82">Bottom</button></div>' +
+      '<div class="rf-row"><label>Start<input type="number" id="prop-start" step="0.1" value="' + (l.start||0).toFixed(1) + '"></label>' +
+      '<label>End<input type="number" id="prop-end" step="0.1" value="' + (l.end||trimDuration).toFixed(1) + '"></label></div>' +
+      '<div class="rf-row"><button class="rf-btn-del" id="prop-del">Delete</button>' +
+      (selection.type === 'text' && selection.index != null ? '<button class="rf-btn-block" id="prop-dup" style="width:auto">Duplicate</button>' : '') +
+      '</div>';
+    bindPropsText(l);
+    return;
+  }
+  if (selection.type === 'logo' && state.logo) {
+    const l = state.logo;
+    title.textContent = 'Logo';
+    body.innerHTML =
+      '<div class="rf-logothumb"><img src="' + l.url + '" alt=""></div>' +
+      '<label>Size<input type="range" id="logo-scale2" min="3" max="40" value="' + Math.round(l.scale*100) + '"></label>' +
+      '<label>Opacity<input type="range" id="logo-op2" min="5" max="100" value="' + Math.round(l.opacity*100) + '"></label>' +
+      '<div class="rf-posrow">' +
+        '<button class="rf-pos" data-logo="tl">Top-L</button><button class="rf-pos" data-logo="tr">Top-R</button>' +
+        '<button class="rf-pos" data-logo="br">Bot-R</button><button class="rf-pos" data-logo="cb">C-Bot</button>' +
+      '</div>' +
+      '<button class="rf-btn-del" id="logo-remove2">Remove watermark</button>';
+    document.getElementById('logo-scale2').addEventListener('input', (e) => { state.logo.scale = parseInt(e.target.value,10)/100; applyLogoStyle(); });
+    document.getElementById('logo-op2').addEventListener('input', (e) => { state.logo.opacity = parseInt(e.target.value,10)/100; applyLogoStyle(); });
+    document.querySelectorAll('[data-logo]').forEach(btn => btn.addEventListener('click', () => {
+      const rect = logoEl.getBoundingClientRect(), sr = stageRef.getBoundingClientRect();
+      const wPct = rect.width/sr.width*100, hPct = rect.height/sr.height*100, m = 3;
+      if (btn.dataset.logo==='tl'){state.logo.x=m;state.logo.y=m;}
+      else if(btn.dataset.logo==='tr'){state.logo.x=100-wPct-m;state.logo.y=m;}
+      else if(btn.dataset.logo==='br'){state.logo.x=100-wPct-m;state.logo.y=100-hPct-m;}
+      else {state.logo.x=50-wPct/2;state.logo.y=100-hPct-m;}
+      applyLogoStyle();
+    }));
+    document.getElementById('logo-remove2').addEventListener('click', () => { state.logo=null; selection=null; renderLanes(); renderOverlays(); renderProps(); applyLogoStyle(); });
+    return;
+  }
+  if (selection.type === 'stock') {
+    const l = state.stock[selection.index];
+    if (!l) { selection=null; renderProps(); return; }
+    title.textContent = 'Stock Clip';
+    body.innerHTML =
+      '<div class="rf-logothumb" style="height:72px"><span style="font-size:.7rem;color:#aaa">' + escapeHtml(l.name||'Stock') + '</span></div>' +
+      '<label>Size<input type="range" id="stk-scale" min="10" max="95" value="' + (l.scale||40) + '"></label>' +
+      '<label>Opacity<input type="range" id="stk-op" min="10" max="100" value="' + Math.round((l.opacity!=null?l.opacity:1)*100) + '"></label>' +
+      '<div class="rf-row"><label>Start<input type="number" id="stk-start" step="0.1" value="' + (l.start||0).toFixed(1) + '"></label>' +
+      '<label>End<input type="number" id="stk-end" step="0.1" value="' + (l.end||trimDuration).toFixed(1) + '"></label></div>' +
+      '<button class="rf-btn-del" id="stk-del">Remove</button>';
+    document.getElementById('stk-scale').addEventListener('input',(e)=>{l.scale=parseInt(e.target.value,10);renderOverlays();});
+    document.getElementById('stk-op').addEventListener('input',(e)=>{l.opacity=parseInt(e.target.value,10)/100;renderOverlays();});
+    document.getElementById('stk-start').addEventListener('input',(e)=>{l.start=clamp(parseFloat(e.target.value)||0,0,trimDuration);renderLanes();});
+    document.getElementById('stk-end').addEventListener('input',(e)=>{l.end=clamp(parseFloat(e.target.value)||0,0,trimDuration);renderLanes();});
+    document.getElementById('stk-del').addEventListener('click',()=>{state.stock.splice(selection.index,1);selection=null;renderLanes();renderOverlays();renderProps();});
+    return;
+  }
+  if (selection.type === 'sfx' || selection.type === 'bgm') {
+    const arr = selection.type === 'sfx' ? state.sfx : state.bgm;
+    const l = arr[selection.index];
+    if (!l) { selection=null; renderProps(); return; }
+    title.textContent = selection.type === 'sfx' ? 'Sound Effect' : 'Music';
+    body.innerHTML =
+      '<div class="rf-bgmname">' + escapeHtml(l.name||'audio') + '</div>' +
+      '<label>Volume<input type="range" id="a-vol" min="0" max="200" value="' + Math.round((l.volume!=null?l.volume:0.15)*100) + '"></label>' +
+      '<label>Start (s)<input type="number" id="a-start" min="0" step="0.5" value="' + (l.start||0) + '"></label>' +
+      '<button class="rf-btn-del" id="a-del">Remove</button>';
+    document.getElementById('a-vol').addEventListener('input',(e)=>{l.volume=parseInt(e.target.value,10)/100;});
+    document.getElementById('a-start').addEventListener('input',(e)=>{l.start=Math.max(0,parseFloat(e.target.value)||0);renderLanes();});
+    document.getElementById('a-del').addEventListener('click',()=>{arr.splice(selection.index,1);selection=null;renderLanes();renderProps();});
+    return;
+  }
+  if (selection.type === 'filters') {
+    const key = selection.ref.split(':')[1];
+    const f = state.filters[parseInt(key,10)];
+    if (!f) { selection=null; renderProps(); return; }
+    title.textContent = (FILTER_NAMES[f.kind]||f.kind) + ' Filter';
+    body.innerHTML =
+      '<label>Intensity<input type="range" id="f-int" min="0" max="100" value="' + Math.round(f.intensity*100) + '"></label>' +
+      '<button class="rf-btn-del" id="f-del">Remove filter</button>';
+    document.getElementById('f-int').addEventListener('input',(e)=>{f.intensity=parseInt(e.target.value,10)/100;});
+    document.getElementById('f-del').addEventListener('click',()=>{state.filters.splice(parseInt(key,10),1);selection=null;renderLanes();renderFilterChips();renderProps();});
+    return;
+  }
+  if (selection.type === 'effects') {
+    const which = selection.ref.split(':')[1];
+    const eff = state.effects[which];
+    title.textContent = which === 'open' ? 'Opening Effect' : 'Closing Effect';
+    const kinds = which === 'open'
+      ? [['none','None'],['zoom_in','Zoom-in'],['flash','Flash'],['fade_in','Fade-in']]
+      : [['none','None'],['fade_out','Fade-out'],['blur_out','Blur-out'],['glitch','Glitch']];
+    body.innerHTML =
+      '<label>Kind<select id="eff-k">' + kinds.map(k=>'<option value="'+k[0]+'"'+(eff.kind===k[0]?' selected':'')+'>'+k[1]+'</option>').join('') + '</select></label>' +
+      '<label>Duration (s)<input type="range" id="eff-d" min="0.2" max="2.5" step="0.1" value="' + (eff.dur||0.5) + '"></label>';
+    document.getElementById('eff-k').addEventListener('change',(e)=>{eff.kind=e.target.value;renderLanes();syncEffectInputs();});
+    document.getElementById('eff-d').addEventListener('input',(e)=>{eff.dur=parseFloat(e.target.value);syncEffectInputs();});
+    return;
+  }
+  renderProps();
 }
-document.querySelectorAll('#hook-presets button').forEach(btn => {
-  btn.addEventListener('click', () => {
-    const p = HOOK_PRESETS[btn.dataset.preset];
-    if (!p) return;
-    Object.assign(state.hook, p);
-    syncHookControls();
-    document.querySelectorAll('#hook-presets button').forEach(b => b.classList.toggle('active', b === btn));
-    hookShown = false;
-    applyHookStyle();
-    updateHookVisibility();
-  });
-});
-document.querySelectorAll('.rf-pos[data-pos]').forEach(btn => {
-  btn.addEventListener('click', () => {
-    const y = btn.dataset.pos === 'top' ? 12 : btn.dataset.pos === 'center' ? 50 : 88;
-    state.hook.y = y;
-    state.hook.x = 50;
-    applyHookStyle();
-  });
-});
+function escapeHtml(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 
-// ── watermark / logo ──
-const logoFile = document.getElementById('logo-file');
-const logoUploadBtn = document.getElementById('logo-upload');
-logoUploadBtn.addEventListener('click', () => logoFile.click());
-logoFile.addEventListener('change', async () => {
-  const file = logoFile.files[0];
+function bindPropsText(l) {
+  const t = document.getElementById('prop-text');
+  if (t) t.addEventListener('input', (e) => { l.text = e.target.value; if (selection.index==null){renderHookStyle();} else renderOverlays(); });
+  const bind = (id, fn) => { const el = document.getElementById(id); if (el) el.addEventListener(el.type==='checkbox'?'change':'input', fn); };
+  bind('prop-font',(e)=>{l.font=e.target.value; if(selection.index==null)renderHookStyle(); else renderOverlays();});
+  bind('prop-size',(e)=>{l.size=parseInt(e.target.value,10); if(selection.index==null)renderHookStyle(); else renderOverlays();});
+  bind('prop-color',(e)=>{l.color=e.target.value; if(selection.index==null)renderHookStyle(); else renderOverlays();});
+  bind('prop-bg',(e)=>{l.bgColor=e.target.value; if(selection.index==null)renderHookStyle(); else renderOverlays();});
+  bind('prop-bgalpha',(e)=>{l.bgAlpha=parseInt(e.target.value,10)/100; if(selection.index==null)renderHookStyle(); else renderOverlays();});
+  bind('prop-stroke',(e)=>{l.stroke=parseInt(e.target.value,10); if(selection.index==null)renderHookStyle(); else renderOverlays();});
+  bind('prop-bold',(e)=>{l.bold=e.target.checked; if(selection.index==null)renderHookStyle(); else renderOverlays();});
+  bind('prop-upper',(e)=>{l.uppercase=e.target.checked; if(selection.index==null)renderHookStyle(); else renderOverlays();});
+  bind('prop-anim',(e)=>{l.animation=e.target.value;});
+  const st = document.getElementById('prop-start');
+  if (st) st.addEventListener('input',(e)=>{l.start=clamp(parseFloat(e.target.value)||0,0,Math.max(0,l.end-0.05));renderLanes();});
+  const en = document.getElementById('prop-end');
+  if (en) en.addEventListener('input',(e)=>{l.end=clamp(parseFloat(e.target.value)||0,l.start+0.05,trimDuration);renderLanes();});
+  const del = document.getElementById('prop-del');
+  if (del) del.addEventListener('click',()=>{ deleteSelected(); });
+  const dup = document.getElementById('prop-dup');
+  if (dup) dup.addEventListener('click',()=>{
+    const copy = JSON.parse(JSON.stringify(l)); copy.id = uid();
+    copy.start = clamp(l.start+0.2,0,trimDuration); copy.end = clamp(l.end+0.2,state.trimStart+0.2,trimDuration);
+    state.texts.push(copy); selection = { type:'text', index: state.texts.length-1, canvas:true };
+    renderLanes(); renderOverlays(); renderProps();
+  });
+  document.querySelectorAll('[data-posy]').forEach(b => b.addEventListener('click',()=>{ l.y = parseInt(b.dataset.posy,10); l.x = 50; if(selection.index==null)renderHookStyle(); else renderOverlays(); }));
+}
+function deleteSelected() {
+  if (!selection) return;
+  if (selection.type === 'text') {
+    if (selection.index == null) { state.hook = null; }
+    else { state.texts.splice(selection.index,1); }
+  } else if (selection.type === 'captions') state.captions.splice(selection.index,1);
+  selection = null;
+  renderLanes(); renderOverlays(); renderProps();
+}
+
+// ─────────────────── hook / callout creation ───────────────────
+function ensureHook() {
+  if (!state.hook) {
+    state.hook = Object.assign(defaultText('', state.trimStart, Math.min(state.trimEnd, state.trimStart + 3), 12), {
+      dur: Math.min(3, Math.max(0.5, trimDuration)), width: 0.85 });
+  }
+}
+document.getElementById('hook-add').addEventListener('click', () => {
+  if (!state.hook) ensureHook();
+  state.hook.text = state.hook.text || 'Viral callout line';
+  selection = { type:'text', index:null };
+  renderLanes(); renderOverlays(); renderProps(); renderHookStyle();
+});
+hookEl.addEventListener('pointerdown', (e) => { e.preventDefault(); selection = { type:'text', index:null }; renderOverlays(); renderProps(); overlayDrag = 'hook'; });
+logoEl.addEventListener('pointerdown', (e) => { e.preventDefault(); selection = { type:'logo' }; renderProps(); overlayDrag = 'logo'; });
+document.querySelectorAll('[data-hpreset]').forEach(b => b.addEventListener('click', () => {
+  if (!state.hook) ensureHook();
+  const p = b.dataset.hpreset;
+  if (p === 'open') Object.assign(state.hook,{bgAlpha:0,stroke:6,strokeColor:'#000000',strokeAlpha:0.9,bold:true,size:64,y:25,uppercase:false});
+  else if (p === 'lowerthird') Object.assign(state.hook,{bgAlpha:0.6,bgColor:'#000000',stroke:0,bold:true,size:52,y:82,uppercase:false});
+  else if (p === 'solid') Object.assign(state.hook,{bgAlpha:0.75,bgColor:'#000000',stroke:0,bold:true,size:56,y:50,uppercase:true});
+  state.hook.text = state.hook.text || 'Your hook line';
+  selection = { type:'text', index:null };
+  renderHookStyle(); renderProps();
+}));
+
+// ─────────────────── captions from transcript ───────────────────
+function loadCaptions() {
+  fetch("{% url 'captions_for_clip' video_id filename %}")
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) { alert('Captions: ' + data.error); return; }
+      const style = document.getElementById('cap-style').value;
+      const capY = style === 'pill' || style === 'band' ? 82 : 50;
+      const caps = data.segments.slice(0, 80).map(s => {
+        const c = defaultCaption(s.text, s.start, s.end);
+        c.y = capY;
+        if (style === 'band') { c.bgAlpha = 0.5; c.pad = 10; c.bold = true; c.text = c.text.toUpperCase(); }
+        else if (style === 'pill') { c.bgAlpha = 0.6; c.pad = 14; }
+        else { c.bgAlpha = 0.0; c.stroke = 4; c.strokeColor = '#000000'; c.strokeAlpha = 0.9; }
+        return c;
+      });
+      state.captions = state.captions.concat(caps);
+      selection = null;
+      renderLanes(); renderOverlays(); renderProps();
+      ccChip.textContent = '\u2713 ' + caps.length + ' captions added';
+      ccChip.classList.add('show');
+      setTimeout(() => ccChip.classList.remove('show'), 2000);
+    })
+    .catch(err => alert('Captions error: ' + err));
+}
+document.getElementById('cap-add').addEventListener('click', loadCaptions);
+
+// ─────────────────── SFX quick add ───────────────────
+function renderSfxQuick(showButtons) {
+  sfxQuick.innerHTML = '';
+  ['swoosh','pop','bass_drop','shutter'].forEach(k => {
+    const b = document.createElement('button');
+    b.className = 'rf-sfxbtn';
+    b.textContent = k.replace('_',' ');
+    b.addEventListener('click', () => generateSfx(k));
+    sfxQuick.appendChild(b);
+  });
+}
+function generateSfx(kind) {
+  fetch("{% url 'sfx_generate' video_id 'X' %}".replace('/X', '/' + kind), { method:'POST' })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) { alert('SFX: ' + d.error); return; }
+      addAudioLayer('sfx', d);
+    })
+    .catch(err => alert('SFX error: ' + err));
+}
+document.querySelectorAll('[data-sfx]').forEach(b =>
+  b.addEventListener('click', () => generateSfx(b.dataset.sfx)));
+function addAudioLayer(kind, data) {
+  const l = { id: uid(), file: data.file, url: data.url, name: (data.kind || kind).replace(/_/g,' '),
+    start: Math.max(0, trimVideo.currentTime - state.trimStart), volume: kind === 'bgm' ? 0.15 : 1.0 };
+  l.end = Math.min(trimDuration, l.start + (data.duration || (kind === 'bgm' ? 4 : 1)));
+  if (kind === 'bgm') state.bgm.push(l); else state.sfx.push(l);
+  selection = { type: kind, index: (kind === 'bgm' ? state.bgm : state.sfx).length - 1 };
+  renderLanes(); renderProps();
+}
+
+// ─────────────────── uploads ───────────────────
+async function uploadAudioFile(fileInput, kind, url) {
+  const file = fileInput.files[0];
   if (!file) return;
-  const fd = new FormData();
-  fd.append('file', file);
+  const fd = new FormData(); fd.append('file', file); fd.append('kind', kind);
   try {
-    const resp = await fetch("{% url 'upload_logo' video_id %}", { method: 'POST', body: fd });
+    const resp = await fetch(url, { method: 'POST', body: fd });
     const data = await resp.json();
     if (!resp.ok) { alert('Upload failed: ' + (data.error || resp.status)); return; }
-    state.logo = { file: data.file, url: data.url, name: file.name, x: 3, y: 3, scale: 0.12, opacity: 1.0 };
-    document.getElementById('logo-empty').hidden = true;
-    document.getElementById('logo-active').hidden = false;
-    document.getElementById('logo-thumb').src = data.url;
-    document.getElementById('logo-scale').value = 12;
-    document.getElementById('logo-opacity').value = 100;
-    applyLogoStyle();
+    addAudioLayer(kind, { file: data.file, url: data.url, kind, duration: 0 });
   } catch (err) { alert('Upload error: ' + err); }
+  fileInput.value = '';
+}
+const bgmFileEl = document.getElementById('bgm-file');
+const sfxFileEl = document.getElementById('sfx-file');
+document.getElementById('bgm-upload').addEventListener('click', () => bgmFileEl.click());
+document.getElementById('sfx-upload').addEventListener('click', () => sfxFileEl.click());
+bgmFileEl.addEventListener('change', () => uploadAudioFile(bgmFileEl, 'bgm', "{% url 'upload_audio' video_id %}"));
+sfxFileEl.addEventListener('change', () => uploadAudioFile(sfxFileEl, 'sfx', "{% url 'upload_audio' video_id %}"));
+
+// logo upload
+const logoFile = document.getElementById('logo-file');
+logoFile.addEventListener('change', async () => {
+  const file = logoFile.files[0]; if (!file) return;
+  const fd = new FormData(); fd.append('file', file);
+  try {
+    const resp = await fetch("{% url 'upload_logo' video_id %}", { method:'POST', body: fd });
+    const data = await resp.json();
+    if (!resp.ok) { alert('Logo upload failed'); return; }
+    state.logo = { id: uid(), file: data.file, url: data.url, name: file.name, x: 3, y: 3, scale: 0.12, opacity: 1.0 };
+    applyLogoStyle(); renderLanes(); renderProps();
+  } catch (err) { alert('Logo error: ' + err); }
   logoFile.value = '';
 });
-document.getElementById('logo-scale').addEventListener('input', (e) => {
-  if (!state.logo) return;
-  state.logo.scale = parseInt(e.target.value, 10) / 100;
-  applyLogoStyle();
+
+// ─────────────────── audio mixer ───────────────────
+document.getElementById('src-volume').addEventListener('input', (e) => {
+  state.sourceVolume = parseInt(e.target.value, 10) / 100; trimVideo.volume = state.sourceVolume;
 });
-document.getElementById('logo-opacity').addEventListener('input', (e) => {
-  if (!state.logo) return;
-  state.logo.opacity = parseInt(e.target.value, 10) / 100;
-  applyLogoStyle();
+document.getElementById('enhance-on').addEventListener('change', (e) => {
+  if (!e.target.checked) { state.audioFx.enhance = 0; document.getElementById('enhance-val').value = 0; }
 });
-document.querySelectorAll('.rf-pos[data-logo]').forEach(btn => {
+document.getElementById('enhance-val').addEventListener('input', (e) => {
+  state.audioFx.enhance = parseInt(e.target.value, 10) / 100;
+  if (state.audioFx.enhance > 0) document.getElementById('enhance-on').checked = true;
+});
+document.getElementById('duck-val').addEventListener('input', (e) => {
+  state.audioFx.ducking = parseInt(e.target.value, 10) / 100;
+});
+
+// ─────────────────── filters ───────────────────
+function renderFilterChips() {
+  document.querySelectorAll('#filters-chips .rf-chipbtn').forEach(c => {
+    c.classList.toggle('on', state.filters.some(f => f.kind === c.dataset.fk));
+  });
+}
+function filterForKind(kind) { return state.filters.find(f => f.kind === kind); }
+document.querySelectorAll('#filters-chips .rf-chipbtn').forEach(btn => {
   btn.addEventListener('click', () => {
-    if (!state.logo) return;
-    const rect = logoEl.getBoundingClientRect();
-    const stageRect = stageRef.getBoundingClientRect();
-    const wPct = (rect.width / stageRect.width) * 100;
-    const hPct = (rect.height / stageRect.height) * 100;
-    const margin = 3;
-    const kind = btn.dataset.logo;
-    if (kind === 'tl') { state.logo.x = margin; state.logo.y = margin; }
-    else if (kind === 'tr') { state.logo.x = 100 - wPct - margin; state.logo.y = margin; }
-    else if (kind === 'br') { state.logo.x = 100 - wPct - margin; state.logo.y = 100 - hPct - margin; }
-    else if (kind === 'cb') { state.logo.x = 50 - wPct / 2; state.logo.y = 100 - hPct - margin; }
-    applyLogoStyle();
+    const kind = btn.dataset.fk;
+    const existing = filterForKind(kind);
+    if (existing) { state.filters = state.filters.filter(f => f.kind !== kind); selection = null; }
+    else { state.filters.push({ kind, intensity: 0.5 }); selection = { type:'filters', ref:'filters:' + (state.filters.length - 1) }; }
+    renderFilterChips(); renderLanes();
+    const row = document.getElementById('filter-intensity-row');
+    row.hidden = !selection || selection.type !== 'filters';
+    if (!row.hidden) {
+      const f = state.filters[parseInt(selection.ref.split(':')[1],10)];
+      document.getElementById('filter-intensity-name').textContent = FILTER_NAMES[f.kind] || f.kind;
+      document.getElementById('filter-intensity').value = Math.round(f.intensity*100);
+    }
+    renderProps();
   });
 });
-document.getElementById('logo-remove').addEventListener('click', () => {
-  state.logo = null;
-  document.getElementById('logo-empty').hidden = false;
-  document.getElementById('logo-active').hidden = true;
-  applyLogoStyle();
+document.getElementById('filter-intensity').addEventListener('input', (e) => {
+  if (!selection || selection.type !== 'filters') return;
+  const f = state.filters[parseInt(selection.ref.split(':')[1],10)];
+  if (f) f.intensity = parseInt(e.target.value, 10) / 100;
+});
+document.getElementById('filter-remove').addEventListener('click', () => {
+  if (!selection || selection.type !== 'filters') return;
+  const kind = state.filters[parseInt(selection.ref.split(':')[1],10)].kind;
+  state.filters = state.filters.filter(f => f.kind !== kind);
+  selection = null;
+  document.getElementById('filter-intensity-row').hidden = true;
+  renderFilterChips(); renderLanes(); renderProps();
 });
 
-// ── audio mixer ──
-document.getElementById('src-volume').addEventListener('input', (e) => {
-  state.sourceVolume = parseInt(e.target.value, 10) / 100;
-  trimVideo.volume = state.sourceVolume;
-});
-const bgmFile = document.getElementById('bgm-file');
-document.getElementById('bgm-upload').addEventListener('click', () => bgmFile.click());
-bgmFile.addEventListener('change', async () => {
-  const file = bgmFile.files[0];
-  if (!file) return;
+// ─────────────────── effects inputs ───────────────────
+function syncEffectInputs() {
+  document.getElementById('eff-open-kind').value = state.effects.open.kind;
+  document.getElementById('eff-open-dur').value = state.effects.open.dur;
+  document.getElementById('eff-close-kind').value = state.effects.close.kind;
+  document.getElementById('eff-close-dur').value = state.effects.close.dur;
+  renderLanes();
+}
+document.getElementById('eff-open-kind').addEventListener('change', (e) => { state.effects.open.kind = e.target.value; renderLanes(); });
+document.getElementById('eff-open-dur').addEventListener('input', (e) => { state.effects.open.dur = parseFloat(e.target.value); });
+document.getElementById('eff-close-kind').addEventListener('change', (e) => { state.effects.close.kind = e.target.value; renderLanes(); });
+document.getElementById('eff-close-dur').addEventListener('input', (e) => { state.effects.close.dur = parseFloat(e.target.value); });
+
+// ─────────────────── stock search ───────────────────
+let stkOri = 'portrait';
+document.querySelectorAll('[data-ori]').forEach(b => b.addEventListener('click', () => {
+  stkOri = b.dataset.ori;
+  document.querySelectorAll('[data-ori]').forEach(x => x.classList.toggle('active', x === b));
+}));
+document.getElementById('stk-go').addEventListener('click', stockSearch);
+document.getElementById('stk-q').addEventListener('keydown', (e) => { if (e.key === 'Enter') stockSearch(); });
+function stockSearch() {
+  const q = document.getElementById('stk-q').value.trim();
+  const grid = document.getElementById('stk-grid');
+  const hint = document.getElementById('stk-hint');
+  if (!q) return;
+  grid.innerHTML = '<div class="stk-empty">Searching\u2026</div>';
+  fetch("{% url 'stock_search' %}?q=" + encodeURIComponent(q) + '&orientation=' + stkOri)
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) {
+        if (d.error === 'no_key') { hint.textContent = 'Set PEXELS_API_KEY in .env to enable stock search.'; }
+        else hint.textContent = 'Search failed: ' + d.error;
+        grid.innerHTML = ''; return;
+      }
+      grid.innerHTML = '';
+      (d.videos || []).forEach(v => {
+        const card = document.createElement('div');
+        card.className = 'stk-card';
+        const img = document.createElement('img');
+        img.src = v.image; img.alt = ''; img.loading = 'lazy';
+        card.appendChild(img);
+        const add = document.createElement('button');
+        add.className = 'stk-add';
+        add.textContent = '+ Add';
+        add.addEventListener('click', () => addStock(v));
+        card.appendChild(add);
+        grid.appendChild(card);
+      });
+      if (!d.videos || !d.videos.length) grid.innerHTML = '<div class="stk-empty">No results.</div>';
+    })
+    .catch(err => { grid.innerHTML = '<div class="stk-empty">Error: ' + err + '</div>'; });
+}
+function addStock(v) {
   const fd = new FormData();
-  fd.append('file', file);
-  try {
-    const resp = await fetch("{% url 'upload_audio' video_id %}", { method: 'POST', body: fd });
-    const data = await resp.json();
-    if (!resp.ok) { alert('Upload failed: ' + (data.error || resp.status)); return; }
-    state.bgm = { file: data.file, url: data.url, name: file.name, start: 0, volume: 0.15 };
-    document.getElementById('bgm-empty').hidden = true;
-    document.getElementById('bgm-active').hidden = false;
-    document.getElementById('bgm-name').textContent = file.name;
-    document.getElementById('bgm-volume').value = 15;
-    document.getElementById('bgm-start').value = 0;
-    liveBgm.src = data.url;
-    liveBgm.load();
-    liveBgm.volume = liveBgmLevel();
-  } catch (err) { alert('Upload error: ' + err); }
-  bgmFile.value = '';
-});
-document.getElementById('bgm-volume').addEventListener('input', (e) => {
-  if (state.bgm) { state.bgm.volume = parseInt(e.target.value, 10) / 100; liveBgm.volume = liveBgmLevel(); }
-});
-document.getElementById('bgm-start').addEventListener('input', (e) => {
-  if (state.bgm) { state.bgm.start = Math.max(0, parseFloat(e.target.value) || 0); if (!liveBgm.paused) liveBgm.currentTime = liveBgmPos(); }
-});
-document.getElementById('bgm-duck').addEventListener('change', (e) => {
-  state.ducking = e.target.checked;
-  if (state.bgm) liveBgm.volume = liveBgmLevel();
-});
-document.getElementById('bgm-remove').addEventListener('click', () => {
-  state.bgm = null;
-  state.ducking = false;
-  liveBgm.pause();
-  liveBgm.removeAttribute('src');
-  liveBgm.load();
-  document.getElementById('bgm-empty').hidden = false;
-  document.getElementById('bgm-active').hidden = true;
-});
+  fd.append('url', v.url); fd.append('id', String(v.id));
+  fetch("{% url 'stock_add' video_id %}", { method: 'POST', body: fd })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) { alert('Stock: ' + d.error); return; }
+      const t = Math.max(0, trimVideo.currentTime - state.trimStart);
+      state.stock.push({
+        id: uid(), file: d.file, url: d.url, name: 'Stock ' + v.id,
+        start: t, end: Math.min(trimDuration, t + Math.min(4, (v.duration||4) / 2)),
+        x: 50, y: 60, scale: 40, opacity: 1.0, image: false,
+      });
+      selection = { type:'stock', index: state.stock.length - 1, canvas: true };
+      renderLanes(); renderOverlays(); renderProps();
+    })
+    .catch(err => alert('Stock error: ' + err));
+}
 
-// ── export ──
+// ─────────────────── export ───────────────────
+function cleanText(l) {
+  return { text: l.text, start: l.start, end: l.end, x: l.x, y: l.y, size: l.size,
+    color: l.color, bgColor: l.bgColor, bgAlpha: l.bgAlpha, pad: l.bgAlpha > 0 ? l.pad : 0,
+    bold: l.bold, stroke: l.stroke, strokeColor: l.strokeColor, strokeAlpha: l.strokeAlpha,
+    uppercase: !!l.uppercase, font: l.font || '', animation: l.animation };
+}
 function serializeLayers() {
   const text = [];
-  if (state.hook.text.trim()) {
-    const h = state.hook;
-    text.push({
-      text: (state.hook.lines || []).join('\n'), start: hookStart(), end: hookEnd(),
-      size: h.size, color: h.color,
-      bgColor: h.bgColor, bgAlpha: h.bgAlpha, pad: h.bgAlpha > 0 ? 22 : 0,
-      bold: h.bold, stroke: h.stroke,
-      strokeColor: h.strokeColor, strokeAlpha: h.strokeAlpha,
-      uppercase: h.uppercase, animation: h.animation,
-      x: h.x, y: h.y,
-    });
-  }
-  const audio = state.bgm ? [{ file: state.bgm.file, start: state.bgm.start, volume: state.bgm.volume }] : [];
+  const hl = hookLayer();
+  if (hl) text.push(hl);
+  state.texts.forEach(l => { if (l.text && l.text.trim()) text.push(cleanText(l)); });
   return JSON.stringify({
     text: text,
-    audio: audio,
-    logo: state.logo ? { file: state.logo.file, x: state.logo.x, y: state.logo.y, scale: state.logo.scale, opacity: state.logo.opacity } : null,
+    captions: state.captions.map(cleanText),
+    stock: state.stock.map(l => ({ file:l.file, start:l.start, end:l.end, x:l.x, y:l.y,
+      scale:l.scale, opacity:l.opacity, image:!!l.image })),
+    sfx: state.sfx.map(l => ({ file:l.file, start:l.start, volume:l.volume })),
+    bgm: state.bgm.map(l => ({ file:l.file, start:l.start, volume:l.volume })),
+    logo: state.logo ? { file: state.logo.file, x:state.logo.x, y:state.logo.y,
+      scale:state.logo.scale, opacity:state.logo.opacity } : null,
+    filters: state.filters.map(f => ({ kind:f.kind, intensity:f.intensity })),
+    audioFx: { enhance: state.audioFx.enhance, ducking: state.audioFx.ducking },
+    effects: { open: state.effects.open, close: state.effects.close },
     cuts: state.cuts,
-    ducking: state.ducking,
     source_volume: state.sourceVolume,
   });
 }
@@ -1094,7 +1452,7 @@ document.getElementById('trim-save').addEventListener('click', (e) => {
   ccChip.classList.add('show');
 });
 
-// ── keyboard ──
+// ─────────────────── keyboard ───────────────────
 window.addEventListener('keydown', (e) => {
   if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT')) return;
   if (e.code === 'Space') {
@@ -1102,26 +1460,25 @@ window.addEventListener('keydown', (e) => {
     if (trimVideo.paused) { trimVideo.currentTime = state.trimStart; trimVideo.play(); }
     else { trimVideo.pause(); }
   }
-  if (e.key === 'Escape' && lassoActive) {
-    lassoActive = false;
-    lassoMoved = false;
-    rfLasso.classList.remove('on');
-  }
-  if (e.key === 'Delete' || e.key === 'Backspace') {
+  if (e.key === 'Escape' && lassoActive) { lassoActive = false; lassoMoved = false; rfLasso.classList.remove('on'); }
+  if ((e.key === 'Delete' || e.key === 'Backspace') && selection && !lassoActive) {
+    if (selection.type === 'filters' || selection.type === 'effects') { /* handled in panel */ }
+    else deleteSelected();
+  } else if ((e.key === 'Delete' || e.key === 'Backspace') && !selection) {
     if (state.cuts.length) { state.cuts.pop(); renderCuts(); }
   }
 });
 
-// ── filmstrip ──
+// ─────────────────── filmstrip ───────────────────
 function buildFilmstrip() {
   const frames = 12;
   const canvas = document.createElement('canvas');
-  canvas.width = 36; canvas.height = 64;
+  canvas.width = 36; canvas.height = 40;
   const ctx = canvas.getContext('2d');
   let done = 0;
   for (let i = 0; i < frames; i++) {
     const t = (i / (frames - 1)) * trimDuration;
-    const fn = () => {
+    setTimeout(() => {
       trimVideo.currentTime = t;
       trimVideo.onseeked = () => {
         ctx.drawImage(trimVideo, 0, 0, canvas.width, canvas.height);
@@ -1130,28 +1487,36 @@ function buildFilmstrip() {
         div.style.backgroundImage = 'url(' + canvas.toDataURL() + ')';
         ccFilmstrip.appendChild(div);
         done++;
-        if (done === frames) {
-          trimVideo.currentTime = state.trimStart;
-          renderTrim();
-        }
+        if (done === frames) { trimVideo.currentTime = state.trimStart; renderTrim(); renderOverlays(); }
       };
-    };
-    setTimeout(fn, i * 80);
+    }, i * 80);
   }
 }
 
+// ─────────────────── fonts ───────────────────
+function loadFonts() {
+  return fetch("{% url 'font_list' %}")
+    .then(r => r.json())
+    .then(d => { fontsCache = d.fonts || []; })
+    .catch(() => { fontsCache = []; });
+}
+
+// ─────────────────── init ───────────────────
+function initAll() {
+  renderTrim(); renderOverlays(); renderHookStyle(); applyLogoStyle();
+}
+buildLanes();
+renderTrim();
+buildTicks();
+loadFonts().then(() => {});
 if (trimDuration > 0) {
   trimVideo.addEventListener('loadedmetadata', () => {
     buildFilmstrip();
     buildTicks();
     renderTrim();
-    applyHookStyle();
     applyLogoStyle();
   });
 }
-buildTicks();
-renderTrim();
-applyHookStyle();
-applyLogoStyle();
+initAll();
 </script>
 {% endblock %}
