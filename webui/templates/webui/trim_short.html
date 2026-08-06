@@ -174,6 +174,7 @@
         <span class="rf-range" id="rf-range-label">0:00 &ndash; 0:00</span>
       </div>
       <span class="rf-spacer"></span>
+      <button class="rf-btnghost" id="btn-split" title="Split selected block at playhead (S)">&#9986; Split</button>
       <button class="rf-btnghost" id="btn-undo" title="Undo last cut (Delete)">&#8634; Undo</button>
       <button class="rf-btnghost" id="trim-reset" title="Reset trim and cuts">Reset</button>
     </div>
@@ -204,7 +205,7 @@
 
     <div class="rf-timebar">
       <span id="rf-clip-start">0:00</span>
-      <span class="rf-hint">Drag blocks to move &middot; grab the right edge to size &middot; drag on V1 to cut &middot; white edges trim</span>
+      <span class="rf-hint">Select a block &middot; place playhead &middot; Split (S) &middot; drag to move &middot; right edge sizes &middot; white edges trim</span>
       <span id="rf-clip-end">0:00</span>
     </div>
   </section>
@@ -1030,6 +1031,42 @@ trimReset.addEventListener('click', () => {
   renderTrim(); seek(state.trimStart);
 });
 
+// ─────────────────── split selected block at playhead ───────────────────
+function selectedLayer() {
+  if (!selection) return null;
+  if (selection.type === 'text') {
+    if (selection.index == null) return null;   // callout is anchored to trim start
+    return { arr: state.texts, i: selection.index };
+  }
+  if (selection.type === 'captions') return { arr: state.captions, i: selection.index };
+  if (selection.type === 'sfx') return { arr: state.sfx, i: selection.index };
+  if (selection.type === 'bgm') return { arr: state.bgm, i: selection.index };
+  if (selection.type === 'stock') return { arr: state.stock, i: selection.index };
+  return null;
+}
+
+function splitSelected() {
+  const sel = selectedLayer();
+  if (!sel || !sel.arr[sel.i]) {
+    ccChip.textContent = 'Split: select a block that spans the playhead';
+    ccChip.classList.add('show'); setTimeout(() => ccChip.classList.remove('show'), 2000);
+    return;
+  }
+  const layer = sel.arr[sel.i];
+  const t = trimVideo.currentTime || 0;
+  if (!(t > layer.start + 0.05 && t < layer.end - 0.05)) {
+    ccChip.textContent = 'Playhead must be inside the block to split';
+    ccChip.classList.add('show'); setTimeout(() => ccChip.classList.remove('show'), 2000);
+    return;
+  }
+  const right = Object.assign({}, layer, { id: uid(), start: t });
+  layer.end = t;
+  sel.arr.splice(sel.i + 1, 0, right);
+  selection = { type: selection.type, index: sel.i + 1, canvas: true };
+  renderLanes(); renderOverlays(); renderProps();
+}
+document.getElementById('btn-split').addEventListener('click', splitSelected);
+
 // ─────────────────── property panel ───────────────────
 function renderProps() {
   const title = document.getElementById('props-title');
@@ -1496,6 +1533,7 @@ window.addEventListener('keydown', (e) => {
     else { trimVideo.pause(); }
   }
   if (e.key === 'Escape' && lassoActive) { lassoActive = false; lassoMoved = false; rfLasso.classList.remove('on'); }
+  if ((e.key === 's' || e.key === 'S') && !lassoActive) { e.preventDefault(); splitSelected(); }
   if ((e.key === 'Delete' || e.key === 'Backspace') && selection && !lassoActive) {
     if (selection.type === 'filters' || selection.type === 'effects') { /* handled in panel */ }
     else deleteSelected();
