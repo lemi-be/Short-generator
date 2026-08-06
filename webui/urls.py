@@ -19,6 +19,7 @@ urlpatterns = [
     path("video/<str:video_id>/stock-add/", views.stock_add, name="stock_add"),
     path("fonts/", views.font_list, name="font_list"),
     path("stock-search/", views.stock_search, name="stock_search"),
+    path("auto-generate/", views.auto_generate, name="auto_generate"),
     path("video/<str:video_id>/", views.clip_editor, name="clip_editor"),
     path("transcript/<str:video_id>/download/", views.download_transcript, name="download_transcript"),
     re_path(r"^output/(?P<filename>.+)$", views.serve_output, name="serve_output"),

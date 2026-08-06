@@ -275,6 +275,111 @@ def generate(request, video_id):
     return HttpResponseRedirect(f"{target}?msg={quote(msg)}")
 
 
+@csrf_exempt
+def auto_generate(request):
+    """Full auto-pipeline ported from the CLI into the web UI.
+
+    POST: url, num_clips, format, language, min_clip_seconds,
+          max_clip_seconds, template.
+
+    Runs download (if needed) -> transcribe (if needed) -> LLM highlight
+    ranking -> creates Clip rows -> crops each to 9:16 (caption-free, so
+    captions land on the editor timeline instead of being baked in) ->
+    redirects into the trimmer for the first generated short.
+    """
+    if request.method != "POST":
+        return redirect("home")
+
+    url = request.POST.get("url", "").strip()
+    if not url:
+        return redirect("home")
+    num_clips = max(1, min(20, int(request.POST.get("num_clips", 10) or 10)))
+    fmt = request.POST.get("format", "720") or "720"
+    language = (request.POST.get("language", "") or "").strip() or None
+    min_sec = max(5, int(request.POST.get("min_clip_seconds", 30) or 30))
+    max_sec = max(min_sec, int(request.POST.get("max_clip_seconds", 60) or 60))
+    template = request.POST.get("template", "stage_solo_speaker")
+
+    out_dir = Path(settings.OUTPUT_DIR)
+    try:
+        from shorts_generator.local.downloader import download_youtube_local
+        from shorts_generator.local.llm import call_local_llm
+        from shorts_generator.local.transcriber import transcribe_local
+        from shorts_generator.highlights import get_highlights
+
+        source_path = Path(download_youtube_local(url, fmt=fmt))
+        video_id = source_path.stem.replace("source_", "", 1)
+        if not str(source_path).startswith(str(out_dir)):
+            target = out_dir / f"source_{video_id}.mp4"
+            if not target.exists() or target.stat().st_size != source_path.stat().st_size:
+                import shutil
+                shutil.copy2(source_path, target)
+            source_path = target
+
+        transcript = transcribe_local(str(source_path), language=language)
+        if not transcript.get("segments"):
+            raise RuntimeError("Whisper produced no segments.")
+
+        result = get_highlights(
+            transcript,
+            num_clips=num_clips,
+            llm_fn=call_local_llm,
+            min_clip_seconds=min_sec,
+            max_clip_seconds=max_sec,
+        )
+        highlights = sorted(
+            result.get("highlights", []),
+            key=lambda h: int(h.get("score", 0) or 0),
+            reverse=True,
+        )[:num_clips]
+        if not highlights:
+            raise RuntimeError("Highlight generator returned zero clips.")
+
+        from shorts_generator.local.clipper import crop_clip_local
+
+        # Reuse existing Clip rows that already cover the same windows, so
+        # re-running doesn't duplicate DB rows.
+        existing = list(Clip.objects.filter(video_id=video_id))
+        generated = []
+        for h in highlights:
+            s = float(h["start_time"])
+            e = float(h["end_time"])
+            clip = next(
+                (c for c in existing if abs(c.start_time - s) < 0.5 and abs(c.end_time - e) < 0.5),
+                None,
+            )
+            if clip is None:
+                clip = Clip.objects.create(video_id=video_id, start_time=s, end_time=e)
+                existing.append(clip)
+            out_path = out_dir / f"short_{video_id}_c{clip.id:04d}.mp4"
+            try:
+                crop_clip_local(str(source_path), s, e, str(out_path), template=template)
+                meta = out_dir / f"{out_path.stem}.meta.json"
+                meta.write_text(json.dumps({
+                    "video_id": video_id,
+                    "clip_id": clip.id,
+                    "source_start": s,
+                    "source_end": e,
+                }), encoding="utf-8")
+                generated.append(str(out_path.name))
+            except Exception as exc:
+                pass  # keep going; failed clip simply isn't listed
+
+        if not generated:
+            raise RuntimeError("All highlight clips failed to render.")
+    except Exception as exc:
+        return render(request, "webui/home.html", {
+            "videos": _get_source_videos(),
+            "error": f"Auto-generate failed: {exc}",
+        })
+
+    msg = (f"Auto-generated {len(generated)} short{'s' if len(generated) != 1 else ''} "
+           f"({template}) from {len(highlights)} highlights")
+    first = generated[0]
+    target = reverse("trim_short", kwargs={"video_id": video_id, "filename": first})
+    return HttpResponseRedirect(f"{target}?msg={quote(msg)}")
+
+
 def serve_output(request, filename):
     path = Path(settings.OUTPUT_DIR) / filename
     if not path.exists() or not path.is_file():
