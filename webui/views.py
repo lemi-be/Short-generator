@@ -249,6 +249,15 @@ def generate(request, video_id):
                 template=template,
             )
             generated.append(str(out_path.name))
+            # Record the source window so captions still map even if the Clip
+            # row is later deleted/recreated.
+            meta = out_dir / f"{out_path.stem}.meta.json"
+            meta.write_text(json.dumps({
+                "video_id": video_id,
+                "clip_id": clip.id,
+                "source_start": clip.start_time,
+                "source_end": clip.end_time,
+            }), encoding="utf-8")
         except Exception as e:
             errors.append(f"clip {i + 1} ({clip.start_time:.1f}-{clip.end_time:.1f}s): {e}")
 
@@ -1108,21 +1117,37 @@ def captions_for_clip(request, video_id, filename):
     if not m:
         return JsonResponse({"error": "not a generated short filename"}, status=400)
     clip_id = int(m.group(1))
+
+    # Resolve the short's source window: the Clip row first, then the meta
+    # sidecar written at generation time (so a deleted clip doesn't break
+    # captions for a short that's already on disk).
+    source_start = source_end = None
     try:
         clip = Clip.objects.get(id=clip_id, video_id=video_id)
+        source_start, source_end = clip.start_time, clip.end_time
     except Clip.DoesNotExist:
+        meta_path = Path(settings.OUTPUT_DIR) / f"{Path(filename).stem}.meta.json"
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                if str(meta.get("video_id")) == video_id:
+                    source_start = float(meta["source_start"])
+                    source_end = float(meta["source_end"])
+            except (ValueError, KeyError, TypeError):
+                source_start = source_end = None
+    if source_start is None:
         return JsonResponse({"error": "clip not found"}, status=404)
 
     srt_path = Path(settings.OUTPUT_DIR) / f"source_{video_id}.srt"
     if not srt_path.exists():
         return JsonResponse({"error": "no transcript for this source"}, status=404)
     segments = _parse_srt(srt_path)
-    clip_dur = max(0.1, clip.end_time - clip.start_time)
+    clip_dur = max(0.1, source_end - source_start)
 
     blocks = []
     for i, seg in enumerate(segments):
-        s = max(0.0, seg["start"] - clip.start_time)
-        e = min(clip_dur, seg["end"] - clip.start_time)
+        s = max(0.0, seg["start"] - source_start)
+        e = min(clip_dur, seg["end"] - source_start)
         if e <= s:
             continue
         blocks.append({
@@ -1133,8 +1158,8 @@ def captions_for_clip(request, video_id, filename):
         })
     return JsonResponse({
         "segments": blocks,
-        "clip_start": clip.start_time,
-        "clip_end": clip.end_time,
+        "clip_start": source_start,
+        "clip_end": source_end,
         "duration": round(clip_dur, 3),
     })
 
