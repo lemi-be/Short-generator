@@ -2,10 +2,20 @@
 {% load static %}
 {% block title %}Refine {{ filename }} | Shorts Generator{% endblock %}
 {% block content %}
+{% if msg %}
+<div class="tr-msg" id="trim-msg">{{ msg }}</div>
+{% endif %}
 <div class="refiner">
   <header class="rf-topbar">
-    <a class="rf-back" href="{% url 'clip_editor' video_id %}">&#8592; <span>Clips</span></a>
-    <div class="rf-title">{{ filename }}</div>
+    <a class="rf-back" href="{% url 'clip_editor' video_id %}">&#8592; <span>Add Clips</span></a>
+    <div class="rf-title">
+      <select id="trim-switch" title="Switch between generated clips">
+        {% for s in generated_shorts %}
+        <option value="{% url 'trim_short' video_id s.name %}"
+                {% if s.name == filename %}selected{% endif %}>{{ s.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
     <div class="rf-actions">
       <span class="rf-dur">{{ duration|floatformat:1 }}s</span>
       <button type="submit" form="trim-form" class="rf-export" id="trim-save">&#9998; Export</button>
@@ -273,6 +283,13 @@ const laneWrap = document.getElementById('lanes');
 const overlayBox = document.getElementById('overlay-layerbox');
 const sfxQuick = document.getElementById('sfx-quick');
 const trimDuration = {{ duration }};
+
+// ─────────────────── clip switcher + dismissible msg ───────────────────
+document.getElementById('trim-switch').addEventListener('change', (e) => {
+  if (e.target.value) window.location.href = e.target.value;
+});
+const trimMsg = document.getElementById('trim-msg');
+if (trimMsg) setTimeout(() => { trimMsg.classList.add('hide'); }, 6000);
 
 const CANVAS_W = 1080;
 let fontsCache = [];
@@ -1198,11 +1215,11 @@ document.querySelectorAll('[data-hpreset]').forEach(b => b.addEventListener('cli
 }));
 
 // ─────────────────── captions from transcript ───────────────────
-function loadCaptions() {
+function loadCaptions(silent) {
   fetch("{% url 'captions_for_clip' video_id filename %}")
     .then(r => r.json())
     .then(data => {
-      if (data.error) { alert('Captions: ' + data.error); return; }
+      if (data.error) { if (!silent) alert('Captions: ' + data.error); return; }
       const style = document.getElementById('cap-style').value;
       const capY = style === 'pill' || style === 'band' ? 82 : 50;
       const caps = data.segments.slice(0, 80).map(s => {
@@ -1213,16 +1230,21 @@ function loadCaptions() {
         else { c.bgAlpha = 0.0; c.stroke = 4; c.strokeColor = '#000000'; c.strokeAlpha = 0.9; }
         return c;
       });
-      state.captions = state.captions.concat(caps);
+      state.captions = silent ? state.captions.concat(caps) : caps;
       selection = null;
       renderLanes(); renderOverlays(); renderProps();
-      ccChip.textContent = '\u2713 ' + caps.length + ' captions added';
-      ccChip.classList.add('show');
-      setTimeout(() => ccChip.classList.remove('show'), 2000);
+      if (!silent) {
+        ccChip.textContent = '\u2713 ' + caps.length + ' captions added';
+        ccChip.classList.add('show');
+        setTimeout(() => ccChip.classList.remove('show'), 2000);
+      }
     })
-    .catch(err => alert('Captions error: ' + err));
+    .catch(err => { if (!silent) alert('Captions error: ' + err); });
 }
 document.getElementById('cap-add').addEventListener('click', loadCaptions);
+// Captions are generated but never baked into the source clips, so load them
+// straight onto the timeline whenever the editor opens.
+loadCaptions(true);
 
 // ─────────────────── SFX quick add ───────────────────
 function renderSfxQuick(showButtons) {

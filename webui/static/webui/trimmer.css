@@ -1,6 +1,18 @@
 html, body { background: #0f0f0f !important; }
 body { padding: 0 !important; }
 .container { max-width: none !important; padding: 0 !important; }
+
+/* ── dismissible banner ─────────────────────────────────── */
+.tr-msg { position: fixed; top: .75rem; left: 50%; transform: translateX(-50%);
+  z-index: 1000; background: #1c2b21; color: #8fe3a8; border: 1px solid #2f6e43;
+  padding: .55rem 1.1rem; border-radius: 999px; font-size: .85rem; max-width: 92vw;
+  box-shadow: 0 6px 24px rgba(0,0,0,.5); transition: opacity .4s; }
+.tr-msg.hide { opacity: 0; pointer-events: none; }
+
+/* ── clip switcher in the top bar ───────────────────────── */
+.rf-title select { background: #242428; color: #fff; border: 1px solid #3a3a3f;
+  border-radius: 8px; padding: .35rem .7rem; font-size: .85rem; max-width: 60vw; }
+
 .refiner { display: flex; flex-direction: column; height: 100vh; height: 100dvh;
   color: #fff; font-family: system-ui, -apple-system, sans-serif; }
 

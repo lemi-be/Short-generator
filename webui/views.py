@@ -12,6 +12,7 @@ from django.http import FileResponse, Http404, HttpResponse, HttpResponseRedirec
 from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.views.decorators.csrf import csrf_exempt
+from urllib.parse import quote
 
 from .models import Clip
 
@@ -231,31 +232,21 @@ def generate(request, video_id):
 
     out_dir = Path(settings.OUTPUT_DIR)
     source_path = out_dir / f"source_{video_id}.mp4"
-    srt_path = out_dir / f"source_{video_id}.srt"
-
-    transcript = None
-    if srt_path.exists():
-        from shorts_generator.local.transcriber import _load_srt_cache
-        transcript = _load_srt_cache(srt_path)
 
     generated = []
     errors = []
     for i, clip in enumerate(clips):
         out_path = out_dir / f"short_{video_id}_c{clip.id:04d}.mp4"
         try:
-            from shorts_generator.local.clipper import _clip_local_segments, crop_clip_local
-            segments = (
-                _clip_local_segments(transcript, clip.start_time, clip.end_time)
-                if transcript
-                else None
-            )
+            from shorts_generator.local.clipper import crop_clip_local
+            # Captions are left out here on purpose: they are added as layers in
+            # the editor and baked in at export time, so nothing is double-burned.
             crop_clip_local(
                 str(source_path),
                 clip.start_time,
                 clip.end_time,
                 str(out_path),
                 template=template,
-                segments=segments,
             )
             generated.append(str(out_path.name))
         except Exception as e:
@@ -265,7 +256,14 @@ def generate(request, video_id):
     if errors:
         details = "; ".join(errors)
         msg += f", {len(errors)} failed: {details}"
-    return HttpResponseRedirect(f"{reverse('clip_editor', kwargs={'video_id': video_id})}?msg={msg}")
+
+    # Dim in the editor with the new clip loaded (captions pre-loaded on the timeline).
+    first = generated[0] if generated else None
+    if first:
+        target = reverse("trim_short", kwargs={"video_id": video_id, "filename": first})
+    else:
+        target = reverse("clip_editor", kwargs={"video_id": video_id})
+    return HttpResponseRedirect(f"{target}?msg={quote(msg)}")
 
 
 def serve_output(request, filename):
@@ -1240,8 +1238,12 @@ def trim_short(request, video_id, filename):
         return HttpResponseRedirect(reverse("clip_editor", kwargs={"video_id": video_id}) + f"?msg={msg}")
 
     duration = float(_ffprobe(src)) or 0
+    generated_shorts = sorted(out_dir.glob(f"short_{video_id}_*.mp4"))
+    msg = request.GET.get("msg", "")
     return render(request, "webui/trim_short.html", {
         "video_id": video_id,
         "filename": filename,
         "duration": duration,
+        "generated_shorts": generated_shorts,
+        "msg": msg,
     })
