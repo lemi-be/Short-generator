@@ -728,6 +728,15 @@ function applyTextLayerStyle(el, l) {
 
 function hookWidthPx() { return Math.max(48, (state.hook.width || 0.85) * stageRef.clientWidth); }
 
+function updateCaptionOverlays() {
+  const t = trimVideo.currentTime || 0;
+  overlayBox.querySelectorAll('[data-cap]').forEach(el => {
+    const l = state.captions[parseInt(el.dataset.cap, 10)];
+    if (!l) return;
+    el.hidden = !(t >= l.start && t <= l.end);
+  });
+}
+
 function renderOverlays() {
   overlayBox.innerHTML = '';
   // free text layers
@@ -743,11 +752,14 @@ function renderOverlays() {
     });
     overlayBox.appendChild(el);
   });
-  // captions
+  // captions — only the one(s) active at the playhead are shown
+  const capT = trimVideo.currentTime || 0;
   state.captions.forEach((l, i) => {
     const el = document.createElement('div');
     el.className = 'c-layer';
+    el.dataset.cap = i;
     applyTextLayerStyle(el, l);
+    el.hidden = !(capT >= l.start && capT <= l.end);
     el.addEventListener('pointerdown', (e) => {
       e.preventDefault(); e.stopPropagation();
       selection = { type:'captions', index:i, canvas:true };
@@ -883,6 +895,7 @@ trimVideo.addEventListener('timeupdate', () => {
   else hookEl.hidden = true;
   // playhead for lanes
   document.querySelectorAll('.lt-track').forEach(() => {});
+  updateCaptionOverlays();
 });
 
 trimVideo.addEventListener('play', () => {
