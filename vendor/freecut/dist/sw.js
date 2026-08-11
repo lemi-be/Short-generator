@@ -1,20 +1,22 @@
-// assets-main-CQ3biEBT-js is replaced at build time (see serviceWorkerVersionPlugin in
+// assets-main-DZn--Xmr-js is replaced at build time (see serviceWorkerVersionPlugin in
 // vite.config.ts) with the hashed entry-chunk filename, so the cache name — and the SW
 // file bytes — change on every deploy. That lets registration.update() detect new
 // versions and lets `activate` purge the previous deploy's cached chunks. In dev the SW
 // is never registered (PROD-gated in main.tsx), so the unreplaced literal is harmless.
-const CACHE_VERSION = 'freecut-app-shell-assets-main-CQ3biEBT-js'
+const CACHE_VERSION = 'freecut-app-shell-assets-main-DZn--Xmr-js'
+// Served under /editor/ in the parent Django project. All shell URLs are
+// /editor/-rooted so cache.addAll() fetches same-scope resources (the site
+// root "/" is the Django home page, not the editor).
 const APP_SHELL_URLS = [
-  '/',
-  '/index.html',
-  '/favicon.svg',
-  '/manifest.webmanifest',
-  '/icons/icon-192.png',
-  '/icons/icon-512.png',
-  '/icons/icon-maskable-512.png',
+  '/editor/index.html',
+  '/editor/favicon.svg',
+  '/editor/manifest.webmanifest',
+  '/editor/icons/icon-192.png',
+  '/editor/icons/icon-512.png',
+  '/editor/icons/icon-maskable-512.png',
 ]
 const CACHEABLE_DESTINATIONS = new Set(['document', 'script', 'style', 'font', 'image'])
-const EXCLUDED_PATH_PREFIXES = ['/moss-tts/']
+const EXCLUDED_PATH_PREFIXES = ['/editor/moss-tts/']
 const MAX_DYNAMIC_CACHE_ENTRIES = 160
 
 self.addEventListener('install', (event) => {
@@ -83,11 +85,11 @@ async function networkFirstWithOfflineFallback(request) {
   try {
     const response = await fetch(request)
     if (response.ok) {
-      cache.put('/index.html', response.clone())
+      cache.put('/editor/index.html', response.clone())
     }
     return response
   } catch {
-    return (await cache.match('/index.html')) ?? Response.error()
+    return (await cache.match('/editor/index.html')) ?? Response.error()
   }
 }
 
