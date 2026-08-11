@@ -98,16 +98,21 @@
     {% endif %}
 
     {% if generated_shorts %}
-    <h2 style="margin-top:1rem">Generated shorts <span style="font-weight:normal;font-size:.8rem;color:#888">(click to play, trim to re-cut)</span></h2>
+    <h2 style="margin-top:1rem">Generated shorts</h2>
     {% for s in generated_shorts %}
     <div class="clip-row" style="font-size:.85rem">
       <span class="flex">
         <a href="{% url 'serve_output' s.name %}" target="_blank" style="color:#1a73e8">{{ s.name }}</a>
         <span style="color:#888">{{ s.stat.st_size|filesizeformat }}</span>
       </span>
-      <a class="btn btn-secondary btn-sm" href="{% url 'trim_short' video_id s.name %}">Trim</a>
+      <a class="btn btn-secondary btn-sm" href="{% url 'editor_shell' video_id %}">Edit</a>
     </div>
     {% endfor %}
+    <p style="font-size:.8rem;color:#888;margin-top:.5rem">
+      Edit any short (and the full source) in the FreeCut editor &mdash; fine-cut,
+      9:16 reframe, captions, text, music. Exports land in
+      <code>output/projects/&lt;id&gt;/exports/</code>.
+    </p>
     {% endif %}
   </div>
 </div>

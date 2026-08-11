@@ -78,7 +78,7 @@
     <tbody>
       {% for v in videos %}
       <tr>
-        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><a href="{% url 'clip_editor' v.id %}" title="Open trimmer">{{ v.id }}</a></td>
+        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><a href="{% url 'clip_editor' v.id %}" title="Open editor">{{ v.id }}</a></td>
         <td>{{ v.duration|floatformat:0 }}s</td>
         <td>
           <div class="pipeline">
@@ -109,6 +109,7 @@
                 <button class="btn btn-secondary btn-sm" type="submit">Transcribe</button>
               </form>
             {% endif %}
+            <a class="btn btn-secondary btn-sm" href="{% url 'editor_shell' v.id %}">Edit</a>
             <a class="btn btn-primary btn-sm" href="{% url 'clip_editor' v.id %}">Pick clips</a>
           </div>
         </td>
@@ -118,6 +119,20 @@
   </table>
 </div>
 
+{% if exports %}
+<div class="card">
+  <h2>Editor exports</h2>
+  <p style="font-size:.85rem;color:#888;margin-bottom:.5rem">
+    Videos exported from the FreeCut editor (<code>output/projects/&lt;id&gt;/exports/</code>).
+  </p>
+  <div class="flex">
+    {% for e in exports %}
+    <a class="btn btn-secondary btn-sm" href="{% url 'serve_output' e.path %}" target="_blank">{{ e.name }}</a>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
 <div class="card" style="font-size:.9rem;color:#555;line-height:1.5">
   <strong>Pipeline steps:</strong>
   <ol style="margin:.5rem 0 0 1.2rem">
@@ -125,6 +140,7 @@
     <li><strong>Transcribe</strong> &mdash; runs faster-whisper to create <code>output/source_*.srt</code></li>
     <li><strong>Pick clips</strong> &mdash; browse the transcript and select start/end timestamps</li>
     <li><strong>Generate</strong> &mdash; crops each clip to a 9:16 short in <code>output/short_*.mp4</code></li>
+    <li><strong>Edit</strong> &mdash; fine-cut, reframe, add captions/text/music in the FreeCut editor, then export</li>
   </ol>
 </div>
 {% endif %}
