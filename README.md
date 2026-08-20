@@ -146,11 +146,20 @@ Then open **http://127.0.0.1:8000**.
 - Add / delete clip ranges, then render them all at once with a chosen template
 - Watch generated shorts inline (byte-range streaming support)
 
-**Trimmer** (`/video/<id>/trim/<filename>/`): re-cut any generated short with:
-- **Text overlays** — font size, color, background box, stroke, uppercase, pop-in animation
-- **Watermark / logo** overlay (uploaded images, positioned + scaled)
-- **Background audio** layers (uploaded files) with optional auto-ducking and source-volume control
-- **Cut ranges** to remove sections from the middle of a clip
+**FreeCut editor** (`/video/<id>/edit/`, also linked from the home page): the
+full browser video editor (vendored in `vendor/freecut/`) is the only editor
+now. It runs entirely in your browser:
+- **Requirements** — Chrome or Edge 113+ (WebGPU + WebCodecs). The page must
+  be served over `http://127.0.0.1:8000` (a secure context); the Django app
+  already sends the COOP/COEP cross-origin-isolation headers FreeCut needs.
+- **First launch** — click "Open workspace" in FreeCut and pick the project's
+  `output/` folder. Everything the pipeline produces (sources, transcripts,
+  audio, logos, stock, generated shorts) is already there.
+- **Workflow** — fine-cut, reframe to 9:16, add captions/text/music, then
+  **Export**. Exports are written to `output/projects/<id>/exports/` and
+  appear on the home page automatically.
+- No Node.js and no network are needed at runtime — the editor build is
+  committed and served from `/editor/` by Django.
 
 ## How It Works
 
@@ -253,11 +262,12 @@ Short-generator/
 ├── requirements.txt              core deps
 ├── requirements-local.txt        deps for the local pipeline
 ├── .env.example
-├── webui/                        Django web UI (download / transcribe / clip editor / trimmer)
-│   ├── settings.py               sqlite + OUTPUT_DIR wiring
+├── webui/                        Django web UI (download / transcribe / clip editor / FreeCut editor)
+│   ├── settings.py               sqlite + OUTPUT_DIR / FREECUT_DIST wiring
 │   ├── models.py                 Clip (video_id, start_time, end_time)
-│   ├── views.py                  download / transcribe / editor / generate / trim / uploads
-│   └── templates/webui/          home, clip_editor, trim_short, video_list
+│   ├── views.py                  download / transcribe / editor / generate / FreeCut app server
+│   └── templates/webui/          home, clip_editor, editor_shell, video_list
+├── vendor/freecut/               vendored FreeCut editor (source + committed dist build, MIT)
 └── shorts_generator/
     ├── config.py                 env / settings (LLM + Whisper + VAD)
     ├── highlights.py             LLM virality ranking

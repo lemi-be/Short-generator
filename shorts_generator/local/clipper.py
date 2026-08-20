@@ -26,6 +26,7 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -34,6 +35,12 @@ try:
     import cv2
 except ImportError:
     cv2 = None  # type: ignore[assignment]
+
+try:
+    from PIL import Image, ImageDraw, ImageFont
+    _HAS_PIL = True
+except ImportError:
+    _HAS_PIL = False
 
 from ..config import LOCAL_OUTPUT_DIR
 from ..progress import Progress
@@ -58,6 +65,126 @@ MAX_CAPTION_WORDS = 5                   # words shown per caption batch (fixed b
 CAPTION_FONT_SCALE = 2.0                # large bold word-by-word caption font
 CAPTION_FONT_THICK = 4                  # bold stroke for captions
 CAPTION_ACCENT = (77, 145, 255)         # #ff914d in BGR — current word highlight
+
+
+# ── Caption style support (Pillow TTF rendering) ──────────────────────
+# Client presets are applied here: font token, color hex, position.
+# OpenCV's built-in Hershey fonts can't render real brand fonts, so when
+# Pillow is available the caption block is rasterized as an RGBA sprite and
+# alpha-composited onto the frame. Falls back to the OpenCV renderer without.
+
+_FONT_TOKEN_FILES = {
+    "inter": ["segoeuib.ttf", "segoeui.ttf", "arialbd.ttf", "arial.ttf"],
+    "serif": ["georgiab.ttf", "georgia.ttf", "timesbd.ttf", "times.ttf"],
+    "mono": ["consolab.ttf", "consola.ttf", "courbd.ttf", "cour.ttf"],
+}
+_WINDOWS_FONT_DIR = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
+
+_font_cache: Dict[Tuple[str, int], Any] = {}
+
+
+def _resolve_font(token: str, size: int):
+    key = (token or "inter", size)
+    if key in _font_cache:
+        return _font_cache[key]
+    for name in _FONT_TOKEN_FILES.get(token or "inter", _FONT_TOKEN_FILES["inter"]):
+        cand = _WINDOWS_FONT_DIR / name
+        if cand.exists():
+            try:
+                font = ImageFont.truetype(str(cand), size)
+                _font_cache[key] = font
+                return font
+            except Exception:
+                continue
+    font = ImageFont.load_default(size)
+    _font_cache[key] = font
+    return font
+
+
+def _composite_rgba(canvas: "np.ndarray", rgba: "np.ndarray", x0: int, y0: int) -> "np.ndarray":
+    """Alpha-composite an RGBA sprite onto an BGR canvas at (x0, y0)."""
+    h, w = rgba.shape[:2]
+    x1, y1 = min(canvas.shape[1], x0 + w), min(canvas.shape[0], y0 + h)
+    if x0 < 0 or y0 < 0 or x1 <= x0 or y1 <= y0:
+        return canvas
+    alpha = (rgba[: y1 - y0, : x1 - x0, 3].astype(np.float32) / 255.0)[..., None]
+    rgb = rgba[: y1 - y0, : x1 - x0, :3].astype(np.float32)
+    bgr = rgb[..., ::-1]  # sprite is RGB; canvas is BGR
+    roi = canvas[y0:y1, x0:x1].astype(np.float32)
+    canvas[y0:y1, x0:x1] = (roi * (1 - alpha) + bgr * alpha).astype(np.uint8)
+    return canvas
+
+
+def _parse_hex(color: Optional[str]) -> Tuple[int, int, int]:
+    try:
+        h = (color or "#FFFFFF").lstrip("#")
+        return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    except (ValueError, IndexError):
+        return 255, 255, 255
+
+
+def _word_block_rgba(
+    window: List[str],
+    batch_start: int,
+    current_idx: int,
+    style: Optional[Dict],
+) -> "np.ndarray":
+    """Rasterize a caption block (max 5 words) as an RGBA sprite.
+
+    All words are drawn in the client's caption color; the word currently
+    being spoken sits on a rounded accent chip so the sync is readable even
+    on mute. The whole block is one sprite pasted per frame.
+    """
+    base_rgb = _parse_hex((style or {}).get("color"))
+    accent_rgb = (255, 145, 77)
+    font = _resolve_font((style or {}).get("font"), 92)
+
+    probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    space_w = probe.textlength(" ", font=font)
+
+    # Wrap words onto up to two lines that fit MAX_CAPTION_W.
+    lines: List[List[str]] = [[]]
+    line_w = 0.0
+    for w in window:
+        ww = probe.textlength(w, font=font)
+        if lines[-1] and line_w + ww > MAX_CAPTION_W:
+            lines.append([])
+            line_w = 0.0
+        lines[-1].append(w)
+        line_w += ww + space_w
+
+    line_h = int(font.size * 1.25)
+    block_w = int(max(sum(probe.textlength(w + " ", font=font) for w in ln) for ln in lines)) if lines else 1
+    block_h = len(lines) * line_h
+
+    img = Image.new("RGBA", (block_w + 60, block_h + 30), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle([0, 0, block_w + 59, block_h + 29], radius=14, fill=(0, 0, 0, 175))
+
+    y = 15
+    idx = 0
+    for line in lines:
+        x = 30
+        for w in line:
+            abs_idx = batch_start + idx
+            if abs_idx == current_idx:
+                ww = d.textlength(w, font=font)
+                d.rounded_rectangle([x - 8, y - 6, x + ww + 8, y + line_h - 8], radius=10, fill=accent_rgb + (235,))
+                d.text((x, y), w, font=font, fill=(20, 20, 20, 255))
+            else:
+                d.text((x, y), w, font=font, fill=base_rgb + (255,))
+            x += d.textlength(w, font=font) + space_w
+            idx += 1
+        y += line_h
+    return np.array(img)
+
+
+def _band_for_position(position: Optional[str], layout_type: str) -> Tuple[int, int]:
+    if position == "top":
+        return 320, 620
+    if position == "center":
+        return 720, 1300
+    return CAPTION_BAND_TOP, CAPTION_BAND_BOTTOM
 
 
 # ── Template specs (from template.json) ─────────────────────────────
@@ -808,12 +935,13 @@ def _active_segment(segments: List[Dict], time: float) -> Optional[Dict]:
     return None
 
 
-def _draw_word_caption(
+def _draw_word_caption_cv(
     canvas: "np.ndarray",
     words: List[str],
     current_idx: int,
     band_y0: int,
     band_y1: int,
+    style: Optional[Dict] = None,
 ) -> "np.ndarray":
     """Dynamic word-by-word caption with a tight background box.
 
@@ -841,7 +969,8 @@ def _draw_word_caption(
     font = cv2.FONT_HERSHEY_TRIPLEX
     base_scale = CAPTION_FONT_SCALE
     thick = CAPTION_FONT_THICK
-    white = (255, 255, 255)
+    base_bgr = tuple(reversed(_parse_hex((style or {}).get("color"))))
+    white = base_bgr
     accent = CAPTION_ACCENT
 
     # Build wrapped lines that fit within MAX_CAPTION_W.
@@ -896,6 +1025,38 @@ def _draw_word_caption(
     return canvas
 
 
+def _draw_word_caption(
+    canvas: "np.ndarray",
+    words: List[str],
+    current_idx: int,
+    band_y0: int,
+    band_y1: int,
+    style: Optional[Dict] = None,
+) -> "np.ndarray":
+    """Word-by-word caption honoring the client's caption style preset.
+
+    Prefers Pillow (real TTF fonts, brand colors, soft chips) and falls back
+    to the OpenCV renderer when Pillow isn't installed. A fixed block of
+    MAX_CAPTION_WORDS words is drawn as one sprite; the current word rides on
+    an accent chip so lip-sync stays readable.
+    """
+    words = [w for w in words if w]
+    if not words:
+        return canvas
+    total = len(words)
+    current_idx = max(0, min(current_idx, total - 1))
+    batch_start = (current_idx // MAX_CAPTION_WORDS) * MAX_CAPTION_WORDS
+    window = words[batch_start:batch_start + MAX_CAPTION_WORDS]
+
+    if _HAS_PIL:
+        rgba = _word_block_rgba(window, batch_start, current_idx, style)
+        block_h, block_w = rgba.shape[:2]
+        x0 = max((CANVAS_W - block_w) // 2, 20)
+        y0 = band_y0 + (band_y1 - band_y0 - block_h) // 2
+        return _composite_rgba(canvas, rgba, x0, y0)
+    return _draw_word_caption_cv(canvas, words, current_idx, band_y0, band_y1, style)
+
+
 def _draw_hook_title(canvas: "np.ndarray", title: str) -> "np.ndarray":
     """Draw the hook headline inside the top safe zone (y ~150px)."""
     if not title:
@@ -922,6 +1083,51 @@ def _draw_divider(canvas: "np.ndarray", layout_type: str) -> "np.ndarray":
     return canvas
 
 
+def _draw_branding(canvas: "np.ndarray", branding: Optional[Dict]) -> "np.ndarray":
+    """Bottom-corner branding: client logo thumbnail + lower-third line.
+
+    The logo is alpha-composited at bottom-right inside the safe zone; the
+    lower-third text sits bottom-left so the two never overlap. All failures
+    are swallowed — branding is decorative and must never break a render.
+    """
+    if not branding:
+        return canvas
+    if not _HAS_PIL:
+        return canvas
+
+    logo = branding.get("logo")
+    lower = (branding.get("lower_third") or "").strip()
+
+    if lower:
+        try:
+            font = _resolve_font("inter", 44)
+            probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+            tw = probe.textlength(lower, font=font)
+            pad_x, pad_y = 24, 14
+            bw = int(tw) + 2 * pad_x
+            bh = 44 + 2 * pad_y
+            img = Image.new("RGBA", (bw, bh), (0, 0, 0, 0))
+            d = ImageDraw.Draw(img)
+            d.rounded_rectangle([0, 0, bw - 1, bh - 1], radius=12, fill=(0, 0, 0, 190))
+            d.text((pad_x, pad_y), lower, font=font, fill=(240, 239, 233, 255))
+            arr = np.array(img)
+            _composite_rgba(canvas, arr, 40, CANVAS_H - bh - 80)
+        except Exception:
+            pass
+
+    if logo:
+        try:
+            img = Image.open(logo).convert("RGBA")
+            img.thumbnail((220, 60), Image.LANCZOS)
+            arr = np.array(img)
+            h, w = arr.shape[:2]
+            _composite_rgba(canvas, arr, CANVAS_W - w - 40, CANVAS_H - h - 80)
+        except Exception:
+            pass
+
+    return canvas
+
+
 def _decorate_frame(
     frame: "np.ndarray",
     spec: Dict[str, Any],
@@ -930,6 +1136,8 @@ def _decorate_frame(
     progress: float,
     time: float = 0.0,
     segments: Optional[List[Dict]] = None,
+    style: Optional[Dict] = None,
+    branding: Optional[Dict] = None,
 ) -> "np.ndarray":
     """Apply canvas-safe zones, word-by-word captions, hook title, divider,
     color overlay, and widgets to a 1080x1920 frame.
@@ -961,9 +1169,9 @@ def _decorate_frame(
 
     # Word-by-word captions (real transcript segments when available)
     text = typo.get("text", "")
-    pos = typo.get("position", "lower_third")
+    pos = style.get("position") if style else None
     if segments:
-        band_y0, band_y1 = CAPTION_BAND_TOP, CAPTION_BAND_BOTTOM
+        band_y0, band_y1 = _band_for_position(pos, layout_type)
         seg = _active_segment(segments, time)
         if seg is not None:
             seg_words = seg.get("words") or []
@@ -980,7 +1188,7 @@ def _decorate_frame(
                 seg_progress = min(max((time - float(seg.get("start", 0.0))) / seg_dur, 0.0), 1.0)
                 shown = max(1, int(seg_progress * len(words))) if words else 0
                 current_idx = min(shown - 1, len(words) - 1)
-            out = _draw_word_caption(out, words, current_idx, band_y0, band_y1)
+            out = _draw_word_caption(out, words, current_idx, band_y0, band_y1, style)
     elif text:
         if layout_type == "split_vertical":
             if pos == "lower_third":
@@ -988,11 +1196,14 @@ def _decorate_frame(
             else:
                 band_y0, band_y1 = 860, 1060           # Option A: center divider
         else:
-            band_y0, band_y1 = CAPTION_BAND_TOP, CAPTION_BAND_BOTTOM
+            band_y0, band_y1 = _band_for_position(pos, layout_type)
         words = text.split()
         shown = max(1, int(progress * len(words))) if words else 0
         current_idx = min(shown - 1, len(words) - 1)
-        out = _draw_word_caption(out, words, current_idx, band_y0, band_y1)
+        out = _draw_word_caption(out, words, current_idx, band_y0, band_y1, style)
+
+    # Branding overlay (logo + lower-third line) in the bottom corner
+    out = _draw_branding(out, branding)
 
     # Widgets
     widgets = spec.get("widgets", [])
@@ -1024,6 +1235,8 @@ def _reframe_composed(
     text: Optional[str] = None,
     title: Optional[str] = None,
     segments: Optional[List[Dict]] = None,
+    style: Optional[Dict] = None,
+    branding: Optional[Dict] = None,
 ) -> str:
     """Two-pass render: pre-scan scene + smooth trajectory, then render.
 
@@ -1113,7 +1326,7 @@ def _reframe_composed(
 
         pct = frame_idx / total_frames if total_frames > 0 else 0
         clip_time = frame_idx / fps if fps > 0 else 0.0
-        composed = _decorate_frame(composed, spec, frame_idx, total_frames, pct, time=clip_time, segments=segments)
+        composed = _decorate_frame(composed, spec, frame_idx, total_frames, pct, time=clip_time, segments=segments, style=style, branding=branding)
         writer.write(composed)
 
         if progress is not None and (frame_idx % 30 == 0 or total_frames == 0):
@@ -1166,6 +1379,9 @@ def crop_clip_local(
     text: Optional[str] = None,
     title: Optional[str] = None,
     segments: Optional[List[Dict]] = None,
+    burn_captions: bool = False,
+    caption_style: Optional[Dict] = None,
+    branding: Optional[Dict] = None,
 ) -> str:
     """Cut + reframe one highlight to 9:16, returning the local mp4 path.
 
@@ -1176,7 +1392,14 @@ def crop_clip_local(
     *segments* are clip-local transcript segments (start/end/text, offset so
     the clip begins at t=0). When provided, real captions synced to the
     audio replace the static *text* fallback.
+    *burn_captions* is off by default: captions are added as layers in the
+    FreeCut editor and baked in at export time, so nothing is double-burned.
+    Set it to True to render *text*/*segments* into the frame pixels here.
     """
+    if not burn_captions:
+        # Clean output: leave the captions to the editor's timeline layers.
+        text = None
+        segments = None
     template = resolve_template(template)
     _register_templates()
 
@@ -1207,6 +1430,8 @@ def crop_clip_local(
                 text=text,
                 title=title,
                 segments=segments,
+                style=caption_style,
+                branding=branding,
             )
     finally:
         if os.path.exists(cut_path):
@@ -1259,12 +1484,17 @@ def crop_highlights_local(
     out_dir: Optional[str] = None,
     template: Optional[str] = None,
     transcript: Optional[Dict] = None,
+    burn_captions: bool = False,
+    caption_style: Optional[Dict] = None,
+    branding: Optional[Dict] = None,
 ) -> List[Dict]:
     """Crop every highlight to 9:16 vertical, writing to out_dir.
 
     *template* is passed through to *crop_clip_local*.
     *transcript* (optional) provides segment timestamps for real, audio-synced
     captions burned into each clip.
+    *burn_captions* defaults to False — captions are styled in the FreeCut
+    editor and baked at export time instead of into the rendered pixels.
     """
     template = resolve_template(template)
     out_dir = out_dir or LOCAL_OUTPUT_DIR
@@ -1277,7 +1507,7 @@ def crop_highlights_local(
             out_path = os.path.join(out_dir, f"short_{i:02d}.mp4")
             print(f"\n[clip/local] {i}/{total}: {h.get('title', '(untitled)')}", flush=True)
             try:
-                segments = _clip_local_segments(transcript, float(h["start_time"]), float(h["end_time"])) if transcript else None
+                segments = _clip_local_segments(transcript, float(h["start_time"]), float(h["end_time"])) if transcript and burn_captions else None
                 with Progress(f"  Clip {i}/{total}", total=None) as p:
                     crop_clip_local(
                         source_path,
@@ -1286,9 +1516,12 @@ def crop_highlights_local(
                         out_path,
                         template=template,
                         progress=p,
-                        text=h.get("hook_sentence") or h.get("title"),
+                        text=h.get("hook_sentence") or h.get("title") if burn_captions else None,
                         title=h.get("title"),
                         segments=segments,
+                        burn_captions=burn_captions,
+                        caption_style=caption_style,
+                        branding=branding,
                     )
                 results.append({**h, "clip_url": out_path})
             except Exception as e:

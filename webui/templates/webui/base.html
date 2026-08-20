@@ -3,65 +3,192 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}Shorts Generator{% endblock %}</title>
+  <title>{% block title %}Short Factory{% endblock %}</title>
   <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: system-ui, -apple-system, sans-serif; background: #f5f5f5; color: #222; padding: 1.5rem; }
-    .container { max-width: 1100px; margin: 0 auto; }
-    h1 { font-size: 1.5rem; margin-bottom: 1rem; }
-    h2 { font-size: 1.15rem; margin: 0 0 .5rem; }
-    a { color: #1a73e8; text-decoration: none; }
-    a:hover { text-decoration: underline; }
-    .card { background: #fff; border-radius: 8px; padding: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,.1); margin-bottom: 1rem; }
-    .btn { display: inline-block; padding: .5rem 1rem; border-radius: 6px; border: none; font-size: .9rem; cursor: pointer; text-decoration: none; font-family: inherit; }
-    .btn-primary { background: #1a73e8; color: #fff; }
-    .btn-primary:hover { background: #1557b0; text-decoration: none; }
-    .btn-success { background: #137333; color: #fff; }
-    .btn-success:hover { background: #0d5628; text-decoration: none; }
-    .btn-danger { background: #d93025; color: #fff; }
-    .btn-danger:hover { background: #a50e0e; text-decoration: none; }
-    .btn-secondary { background: #e8eaed; color: #222; }
-    .btn-secondary:hover { background: #d2d4d7; text-decoration: none; }
-    .btn-sm { padding: .3rem .6rem; font-size: .8rem; }
-    .btn:disabled { opacity: .5; cursor: default; }
-    table { width: 100%; border-collapse: collapse; }
-    th, td { text-align: left; padding: .6rem .4rem; border-bottom: 1px solid #eee; }
-    th { font-weight: 600; font-size: .85rem; color: #555; }
-    .tag { display: inline-block; padding: .2rem .5rem; border-radius: 4px; font-size: .75rem; font-weight: 500; }
-    .tag-done { background: #e6f4ea; color: #137333; }
-    .tag-pending { background: #fef7e0; color: #b06000; }
-    .tag-none { background: #f1f3f4; color: #888; }
-    .msg-success { padding: .75rem; background: #e6f4ea; border-radius: 6px; color: #137333; margin-bottom: 1rem; }
-    .msg-error { padding: .75rem; background: #fce8e6; border-radius: 6px; color: #c5221f; margin-bottom: 1rem; }
-    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
-    @media (max-width: 700px) { .grid-2 { grid-template-columns: 1fr; } }
-    .segment { padding: .4rem .5rem; cursor: pointer; border-radius: 4px; font-size: .9rem; border-bottom: 1px solid #f0f0f0; }
-    .segment:hover { background: #e8f0fe; }
-    .segment .ts { color: #1a73e8; font-weight: 500; margin-right: .5rem; }
-    .clip-row { display: flex; align-items: center; justify-content: space-between; padding: .5rem; border-bottom: 1px solid #eee; }
-    .clip-row:last-child { border-bottom: none; }
-    .scroll-box { max-height: 70vh; overflow-y: auto; border: 1px solid #e0e0e0; border-radius: 6px; }
-    form.add-clip { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; padding: .75rem; background: #f8f9fa; border-radius: 6px; margin-bottom: 1rem; }
-    form.add-clip label { font-size: .85rem; font-weight: 500; }
-    .ts-display { font-family: monospace; font-size: 1rem; padding: .4rem .6rem; background: #fff; border: 1px solid #ccc; border-radius: 4px; width: 150px; flex: none; color: #222; cursor: text; }
-    .ts-display::placeholder { color: #aaa; }
-    .inline-form { display: inline; }
-    .flex { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
-    .mt-1 { margin-top: .75rem; }
-    .mb-1 { margin-bottom: .75rem; }
+    /* ── Design tokens: broadcast control-room tally lights ────────────── */
+    :root {
+      --bg-void:        #17161A;
+      --bg-panel:       #201F24;
+      --bg-panel-raised:#2A2930;
+      --text-primary:   #F0EFE9;
+      --text-secondary: #9A968E;
+      --text-muted:     #625F58;
+      --line-hairline:  #35333A;
+      --tally-red:      #E4483B;
+      --tally-amber:    #E8A23C;
+      --tally-green:    #5FBF6E;
+    }
 
-    /* pipeline stage badges */
-    .pipeline { display: flex; gap: .25rem; align-items: center; }
-    .pipeline .step { display: flex; align-items: center; gap: .25rem; font-size: .8rem; padding: .25rem .5rem; border-radius: 4px; }
-    .pipeline .step.done { background: #e6f4ea; color: #137333; }
-    .pipeline .step.active { background: #e8f0fe; color: #1a73e8; font-weight: 600; }
-    .pipeline .step.pending { background: #f1f3f4; color: #888; }
-    .pipeline .arrow { color: #bbb; font-size: .8rem; }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body { height: 100%; }
+
+    body {
+      font-family: "Inter", system-ui, -apple-system, sans-serif;
+      background: var(--bg-void);
+      color: var(--text-primary);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    a { color: inherit; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* ── Signature element: the tally rail ─────────────────────────────── */
+    .tally-rail {
+      position: fixed; top: 0; left: 0; bottom: 0; width: 4px; z-index: 50;
+      transition: background-color 200ms ease;
+    }
+    .tally-rail.red   { background: var(--tally-red); }
+    .tally-rail.amber { background: var(--tally-amber); }
+    .tally-rail.green { background: var(--tally-green); }
+
+    .app { display: flex; min-height: 100vh; }
+    .app-main { flex: 1; min-width: 0; margin-left: 4px; }
+
+    /* ── Top bar ───────────────────────────────────────────────────────── */
+    .topbar {
+      display: flex; align-items: center; gap: .75rem;
+      padding: .5rem .9rem;
+      background: var(--bg-panel);
+      border-bottom: 1px solid var(--line-hairline);
+      position: sticky; top: 0; z-index: 40;
+    }
+    .topbar .brand { font-weight: 600; letter-spacing: .02em; font-size: 13px; }
+    .topbar .spacer { flex: 1; }
+    .topbar .context { color: var(--text-secondary); font-size: 13px; }
+    .topbar a { color: var(--text-primary); }
+    .topbar a:hover { text-decoration: underline; }
+
+    /* ── Panels & cards ────────────────────────────────────────────────── */
+    .panel {
+      background: var(--bg-panel);
+      border: 1px solid var(--line-hairline);
+      border-radius: 6px;
+    }
+    .panel-head {
+      padding: .5rem .75rem;
+      border-bottom: 1px solid var(--line-hairline);
+      font-weight: 500;
+      display: flex; align-items: center; gap: .5rem;
+    }
+    .panel-body { padding: .75rem; }
+
+    .card-row {
+      display: flex; align-items: center; gap: .75rem;
+      padding: .55rem .9rem;
+      border-bottom: 1px solid var(--line-hairline);
+      cursor: pointer;
+    }
+    .card-row:hover { background: var(--bg-panel-raised); }
+    .card-row:last-child { border-bottom: none; }
+
+    /* ── Tally dots & labels ───────────────────────────────────────────── */
+    .tally-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+    .tally-dot.red   { background: var(--tally-red); }
+    .tally-dot.amber { background: var(--tally-amber); }
+    .tally-dot.green { background: var(--tally-green); }
+    .tally-dot.off   { background: var(--line-hairline); }
+
+    .tally-chip {
+      font-size: 11px; font-weight: 500; padding: .1rem .4rem; border-radius: 3px;
+    }
+    .tally-chip.red   { color: var(--tally-red);   background: color-mix(in srgb, var(--tally-red) 14%, transparent); }
+    .tally-chip.amber { color: var(--tally-amber); background: color-mix(in srgb, var(--tally-amber) 14%, transparent); }
+    .tally-chip.green { color: var(--tally-green); background: color-mix(in srgb, var(--tally-green) 14%, transparent); }
+
+    /* ── Buttons ───────────────────────────────────────────────────────── */
+    .btn {
+      display: inline-flex; align-items: center; gap: .35rem;
+      padding: .35rem .8rem;
+      border: 1px solid var(--line-hairline);
+      border-radius: 5px;
+      background: var(--bg-panel-raised);
+      color: var(--text-primary);
+      font: inherit; font-weight: 500;
+      cursor: pointer; text-decoration: none;
+    }
+    .btn:hover { border-color: var(--text-muted); text-decoration: none; }
+    .btn:disabled { opacity: .5; cursor: default; }
+    .btn.red   { background: var(--tally-red);   border-color: var(--tally-red);   color: #fff; }
+    .btn.amber { background: var(--tally-amber); border-color: var(--tally-amber); color: #17161A; }
+    .btn.green { background: var(--tally-green); border-color: var(--tally-green); color: #17161A; }
+    .btn.sm { padding: .2rem .55rem; font-size: 12px; }
+    .btn.ghost { background: transparent; }
+
+    /* ── Forms ─────────────────────────────────────────────────────────── */
+    input[type=text], input[type=url], select, textarea {
+      background: var(--bg-void);
+      border: 1px solid var(--line-hairline);
+      color: var(--text-primary);
+      border-radius: 5px;
+      padding: .4rem .55rem;
+      font: inherit;
+    }
+    input:focus, select:focus, textarea:focus { outline: 1px solid var(--text-muted); }
+    label.field { font-size: 12px; color: var(--text-secondary); display: flex; flex-direction: column; gap: .25rem; }
+
+    /* ── Typography roles ──────────────────────────────────────────────── */
+    .transcript {
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 17px; line-height: 1.6; color: var(--text-primary);
+    }
+    .timecode {
+      font-family: "JetBrains Mono", Consolas, monospace;
+      font-size: 12px; font-variant-numeric: tabular-nums;
+      color: var(--text-secondary);
+    }
+    .meta { color: var(--text-secondary); font-size: 12px; }
+    .muted { color: var(--text-muted); }
+    h1 { font-size: 16px; font-weight: 600; }
+
+    /* ── Layout helpers ────────────────────────────────────────────────── */
+    .grid { display: grid; gap: 1rem; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 320px; gap: 1rem; }
+    .flex { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+    .flex-1 { flex: 1; min-width: 0; }
+    .mt-1 { margin-top: .75rem; } .mb-1 { margin-bottom: .75rem; }
+    .p-1 { padding: .9rem; }
+    .scroll { overflow-y: auto; }
+    .msg-error { padding: .6rem .75rem; background: color-mix(in srgb, var(--tally-red) 12%, transparent); color: var(--tally-red); border-radius: 5px; margin-bottom: .75rem; }
+    .msg-success { padding: .6rem .75rem; background: color-mix(in srgb, var(--tally-green) 12%, transparent); color: var(--tally-green); border-radius: 5px; margin-bottom: .75rem; }
+
+    /* ── Hotkey legend (persistent, never hidden) ──────────────────────── */
+    .hotkeys {
+      position: fixed; right: .75rem; bottom: .6rem; z-index: 60;
+      display: flex; gap: .5rem;
+      background: var(--bg-panel); border: 1px solid var(--line-hairline);
+      border-radius: 5px; padding: .3rem .55rem;
+      font-size: 11px; color: var(--text-muted);
+    }
+    .hotkeys kbd {
+      font-family: "JetBrains Mono", Consolas, monospace;
+      background: var(--bg-panel-raised); border: 1px solid var(--line-hairline);
+      border-radius: 3px; padding: 0 .3rem; font-size: 10px; color: var(--text-secondary);
+    }
+    .hotkeys span { display: inline-flex; align-items: center; gap: .25rem; }
+    {% block extra_css %}{% endblock %}
   </style>
 </head>
 <body>
-  <div class="container">
-    {% block content %}{% endblock %}
+  <div class="tally-rail{% if tally %} {{ tally }}{% endif %}"></div>
+  <div class="app">
+    <div class="app-main">
+      <div class="topbar">
+        {% block topbar %}
+        <a class="brand" href="{% url 'home' %}">Short Factory</a>
+        <span class="spacer"></span>
+        <span class="context">{% block context %}{% endblock %}</span>
+        {% endblock %}
+      </div>
+      <div style="padding:1rem;max-width:1180px;margin:0 auto">
+        {% block content %}{% endblock %}
+      </div>
+    </div>
   </div>
+  {% block hotkeys %}
+  <div class="hotkeys"></div>
+  {% endblock %}
+  {% block extra_js %}{% endblock %}
 </body>
 </html>

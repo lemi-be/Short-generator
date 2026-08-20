@@ -1,0 +1,181 @@
+{% extends "webui/base.html" %}
+{% block title %}Mark clips — {{ episode.project.name }}{% endblock %}
+{% block context %}{{ episode.project.name }} — {{ episode.title|default:episode.video_id }}{% endblock %}
+{% block content %}
+<div class="flex" style="margin-bottom:.75rem">
+  <a href="{% url 'project_detail' episode.project.pk %}" class="meta">&larr; {{ episode.project.name }}</a>
+  <span class="spacer" style="flex:1"></span>
+  <span class="meta">caption style preset: <span class="timecode">{{ episode.project.caption_font }} · {{ episode.project.caption_color }} · {{ episode.project.caption_position }}</span></span>
+</div>
+
+{% if msg %}<div class="msg-success">{{ msg }}</div>{% endif %}
+
+<div id="render-banner" style="display:none" class="msg-error">
+  Rendering batch: <span id="render-progress">0%</span> — <span id="render-message"></span>
+</div>
+
+<div class="grid-2" style="grid-template-columns:1fr 340px">
+  <div class="panel" style="display:flex;flex-direction:column;min-height:calc(100vh - 190px)">
+    <div class="panel-head">
+      <span>Transcript</span>
+      <span class="spacer" style="flex:1"></span>
+      <span class="meta">hover a line, then press <kbd style="font-family:monospace">I</kbd> / <kbd style="font-family:monospace">O</kbd></span>
+    </div>
+    <div class="scroll" id="transcript" style="height:calc(100vh - 240px);overflow-y:auto">
+      {% for seg in segments %}
+      <div class="segment transcript" data-start="{{ seg.start }}" data-end="{{ seg.end }}"
+           data-ts="{{ seg.ts }}" data-te="{{ seg.te }}" style="padding:.35rem .75rem;cursor:pointer;border-bottom:1px solid var(--line-hairline)">
+        <span class="timecode" style="margin-right:.6rem">{{ seg.ts }} – {{ seg.te }}</span>{{ seg.text }}
+      </div>
+      {% empty %}
+      <div class="panel-body muted">No transcript.</div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div>
+    <div class="panel">
+      <div class="panel-head">Clips (<span id="clip-count">{{ clips|length }}</span>)</div>
+      <div class="scroll" id="clip-list" style="max-height:46vh;overflow-y:auto">
+        {% for clip in clips %}
+        <div class="clip-row" data-id="{{ clip.pk }}" style="display:flex;align-items:center;gap:.5rem;padding:.45rem .75rem;border-bottom:1px solid var(--line-hairline)">
+          <span class="timecode" style="flex:1">{{ clip.start_ts }} → {{ clip.end_ts }} <span class="muted">({{ clip.duration_ts }})</span></span>
+          <button class="btn sm ghost" onclick="delClip('{{ clip.pk }}')" title="Delete">×</button>
+        </div>
+        {% empty %}
+        <div class="panel-body muted" id="no-clips">No clips marked yet. Hover a transcript line and press I, then O.</div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="panel mt-1">
+      <div class="panel-head">Draft</div>
+      <div class="panel-body">
+        <div class="flex" style="justify-content:space-between">
+          <span>In <span class="timecode" id="draft-in">—</span></span>
+          <span>Out <span class="timecode" id="draft-out">—</span></span>
+        </div>
+      </div>
+    </div>
+
+    <button id="render-btn" class="btn green" style="width:100%;margin-top:.75rem;padding:.6rem" {% if not clips %}disabled{% endif %}
+            onclick="renderAll()">Render all marked →</button>
+    {% if clips %}
+    <div class="flex mt-1">
+      <a class="btn sm" href="{% url 'episode_review' episode.pk %}">Review existing renders</a>
+      <a class="btn sm" href="{% url 'editor_shell' episode.video_id %}" target="_blank">Open full editor</a>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block hotkeys %}
+<div class="hotkeys">
+  <span><kbd>I</kbd> mark in</span>
+  <span><kbd>O</kbd> mark out</span>
+  <span><kbd>Enter</kbd> render all</span>
+  <span><kbd>Space</kbd> play/pause</span>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const segs = [...document.querySelectorAll('#transcript .segment')];
+let selected = null;
+let inSec = null, inTs = null;
+
+segs.forEach(el => {
+  el.addEventListener('click', () => select(el));
+  el.addEventListener('mouseenter', () => {
+    if (selected) selected.style.background = '';
+    el.style.background = 'var(--bg-panel-raised)';
+  });
+  el.addEventListener('mouseleave', () => {
+    if (selected !== el) el.style.background = '';
+  });
+});
+
+function select(el) {
+  if (selected) selected.style.background = '';
+  selected = el;
+  el.style.background = 'var(--bg-panel-raised)';
+}
+
+function setDraftIn() {
+  if (!selected) return;
+  inSec = parseFloat(selected.dataset.start);
+  inTs = selected.dataset.ts;
+  document.getElementById('draft-in').textContent = inTs;
+  document.getElementById('draft-in').style.color = 'var(--tally-green)';
+}
+
+async function setDraftOut() {
+  if (!selected || inSec == null) return;
+  const outSec = parseFloat(selected.dataset.end);
+  if (outSec <= inSec) return;
+  const body = new URLSearchParams({ start: inSec, end: outSec });
+  const res = await fetch("{% url 'clip_add' episode.pk %}", {
+    method: 'POST', body,
+    headers: { 'X-CSRFToken': getCookie('csrftoken') }
+  });
+  if (res.ok) { location.reload(); }
+}
+
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+  if (e.key === 'i' || e.key === 'I') { e.preventDefault(); setDraftIn(); }
+  else if (e.key === 'o' || e.key === 'O') { e.preventDefault(); setDraftOut(); }
+  else if (e.key === 'Enter') { e.preventDefault(); renderAll(); }
+});
+
+async function delClip(id) {
+  const res = await fetch(`/episodes/{{ episode.pk }}/clips/${id}/delete/`, {
+    method: 'POST', headers: { 'X-CSRFToken': getCookie('csrftoken') }
+  });
+  if (res.ok) location.reload();
+}
+
+async function renderAll() {
+  const res = await fetch("{% url 'episode_render' episode.pk %}", {
+    method: 'POST', headers: { 'X-CSRFToken': getCookie('csrftoken') }
+  });
+  if (!res.redirected && !res.ok) return;
+  showBanner();
+  pollRender();
+}
+
+function showBanner() {
+  document.getElementById('render-banner').style.display = 'block';
+  document.getElementById('render-btn').disabled = true;
+}
+
+async function pollRender() {
+  const res = await fetch("{% url 'render_status' episode.pk %}");
+  const data = await res.json();
+  if (data.status === 'done') {
+    window.location.href = "{% url 'episode_review' episode.pk %}";
+    return;
+  }
+  if (data.status === 'failed') {
+    document.getElementById('render-progress').textContent = 'failed';
+    document.getElementById('render-message').textContent = data.error || '';
+    return;
+  }
+  document.getElementById('render-progress').textContent = data.progress + '%';
+  document.getElementById('render-message').textContent = data.message || '';
+  setTimeout(pollRender, 1500);
+}
+
+function getCookie(name) {
+  const m = document.cookie.match(new RegExp('(^|; )' + name + '=([^;]*)'));
+  return m ? decodeURIComponent(m[2]) : null;
+}
+
+{% if active_job %}
+// A job is already running; resume polling.
+showBanner();
+pollRender();
+{% endif %}
+</script>
+{% endblock %}

@@ -1,0 +1,1 @@
+const e=new Map;function t(t,n,r){e.set(t,{blob:n,metadata:r})}function n(t){return e.get(t)?.blob??null}function r(t){return e.get(t)?.metadata??null}function i(t){return e.has(t)}function a(t){let n=e.get(t)?.metadata;return n?.opfsPath?{storageType:`opfs`,opfsPath:n.opfsPath,fileSize:n.fileSize}:null}function o(t){e.delete(t)}export{t as a,i,a as n,o,r,n as t};

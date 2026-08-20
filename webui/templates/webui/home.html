@@ -1,85 +1,33 @@
 {% extends "webui/base.html" %}
-{% block title %}Shorts Generator{% endblock %}
+{% block title %}Client projects — Short Factory{% endblock %}
 {% block content %}
-<h1>Shorts Generator</h1>
-
-<div class="card">
-  <h2>1. Add a video</h2>
-  <form method="POST" action="{% url 'download' %}" style="display:flex;gap:.5rem;margin-top:.5rem">
-    {% csrf_token %}
-    <input type="text" name="url" placeholder="YouTube URL (e.g. https://youtu.be/...)" required
-           style="flex:1;padding:.5rem;border:1px solid #ccc;border-radius:4px;font-size:.9rem">
-    <button class="btn btn-primary" type="submit">Download</button>
-  </form>
+<div class="flex" style="margin-bottom:.9rem">
+  <h1>Client projects</h1>
+  <span class="spacer" style="flex:1"></span>
+  <a class="btn green" href="{% url 'project_new' %}">+ New project</a>
 </div>
 
-{% if error %}
-<div class="msg-error">{{ error }}</div>
-{% endif %}
+{% if error %}<div class="msg-error">{{ error }}</div>{% endif %}
+{% if msg %}<div class="msg-success">{{ msg }}</div>{% endif %}
 
-{% if videos %}
-<div class="card">
-  <h2>Source videos</h2>
-  <table>
-    <thead>
-      <tr>
-        <th>Video</th>
-        <th>Duration</th>
-        <th>Pipeline</th>
-        <th>Actions</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for v in videos %}
-      <tr>
-        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><a href="{% url 'clip_editor' v.id %}" title="Open trimmer">{{ v.id }}</a></td>
-        <td>{{ v.duration|floatformat:0 }}s</td>
-        <td>
-          <div class="pipeline">
-            <span class="step done">&#10003; Downloaded</span>
-            {% if v.srt_count > 0 %}
-            <span class="arrow">&rarr;</span>
-            <span class="step done">&#10003; Transcribed</span>
-            {% endif %}
-            {% with clip_count=0 %}
-            {% for s in v.status_chain %}
-              {% if s.0 == "clips" %}
-              <span class="arrow">&rarr;</span>
-              <span class="step done">&#10003; {{ s.1 }}</span>
-              {% endif %}
-              {% if s.0 == "generated" %}
-              <span class="arrow">&rarr;</span>
-              <span class="step done">&#10003; {{ s.1 }}</span>
-              {% endif %}
-            {% endfor %}
-            {% endwith %}
-          </div>
-        </td>
-        <td>
-          <div class="flex">
-            {% if v.duration > 0 and v.srt_count == 0 %}
-              <form method="POST" action="{% url 'transcribe' v.id %}">
-                {% csrf_token %}
-                <button class="btn btn-secondary btn-sm" type="submit">Transcribe</button>
-              </form>
-            {% endif %}
-            <a class="btn btn-primary btn-sm" href="{% url 'clip_editor' v.id %}">Pick clips</a>
-          </div>
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+<div class="panel">
+  {% for row in projects %}
+  <a class="card-row" href="{% url 'project_detail' row.project.pk %}" style="text-decoration:none">
+    <span class="tally-dot {{ row.color }}"></span>
+    <div style="flex:1;min-width:0">
+      <div style="font-weight:600">{{ row.project.name }}</div>
+      <div class="meta">{{ row.project.caption_font }} &middot; {{ row.project.caption_position }} &middot; {{ row.project.default_template }}</div>
+    </div>
+    <div style="display:flex;gap:.4rem;align-items:center">
+      {% if row.counts.rendering %}<span class="tally-chip amber">{{ row.counts.rendering }} rendering</span>{% endif %}
+      {% if row.counts.unmarked %}<span class="tally-chip red">{{ row.counts.unmarked }} to review</span>{% endif %}
+      {% if row.counts.delivered %}<span class="tally-chip green">{{ row.counts.delivered }} delivered</span>{% endif %}
+    </div>
+    <span class="meta">{{ row.message }}</span>
+    <span style="color:var(--text-muted)">→</span>
+  </a>
+  {% empty %}
+  <div class="panel-body muted">No client projects yet. Create one — it takes under a minute and sets the caption style + branding for every episode after it.</div>
+  {% endfor %}
 </div>
-
-<div class="card" style="font-size:.9rem;color:#555;line-height:1.5">
-  <strong>Pipeline steps:</strong>
-  <ol style="margin:.5rem 0 0 1.2rem">
-    <li><strong>Download</strong> &mdash; downloads a YouTube video to <code>output/source_*.mp4</code></li>
-    <li><strong>Transcribe</strong> &mdash; runs faster-whisper to create <code>output/source_*.srt</code></li>
-    <li><strong>Pick clips</strong> &mdash; browse the transcript and select start/end timestamps</li>
-    <li><strong>Generate</strong> &mdash; crops each clip to a 9:16 short in <code>output/short_*.mp4</code></li>
-  </ol>
-</div>
-{% endif %}
 {% endblock %}
