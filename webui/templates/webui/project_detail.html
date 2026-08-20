@@ -1,0 +1,43 @@
+{% extends "webui/base.html" %}
+{% block title %}{{ project.name }} — Short Factory{% endblock %}
+{% block content %}
+<div class="flex" style="margin-bottom:.9rem">
+  <a href="{% url 'home' %}" class="meta">&larr;</a>
+  <h1>{{ project.name }}</h1>
+  <span class="spacer" style="flex:1"></span>
+  <a class="btn ghost" href="{% url 'project_new' %}" title="New project">+ New project</a>
+</div>
+
+{% if error %}<div class="msg-error">{{ error }}</div>{% endif %}
+{% if msg %}<div class="msg-success">{{ msg }}</div>{% endif %}
+
+<div class="panel mb-1">
+  <div class="panel-head">Add episode</div>
+  <form method="POST" action="{% url 'episode_add' project.pk %}" class="panel-body flex" style="gap:.6rem">
+    {% csrf_token %}
+    <input type="text" name="url" placeholder="YouTube URL (https://youtu.be/...)" style="flex:2;min-width:240px">
+    <span class="meta">or</span>
+    <input type="text" name="path" placeholder="Local video file path" style="flex:2;min-width:240px">
+    <button class="btn amber" type="submit">Download &amp; transcribe</button>
+  </form>
+</div>
+
+<div class="panel">
+  {% for row in episodes %}
+  <a class="card-row" href="{% url 'episode_mark' row.episode.pk %}" style="text-decoration:none">
+    <span class="tally-dot {{ row.color }}"></span>
+    <div style="flex:1;min-width:0">
+      <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ row.episode.title|default:row.episode.video_id }}</div>
+      <div class="timecode">{{ row.episode.video_id }}</div>
+    </div>
+    {% if row.counts.unconfirmed %}<span class="tally-chip red">{{ row.counts.unconfirmed }} to review</span>{% endif %}
+    {% if row.counts.rendered %}<span class="tally-chip green">{{ row.counts.rendered }} rendered</span>{% endif %}
+    {% if row.episode.delivered %}<span class="tally-chip green">delivered</span>{% endif %}
+    <span class="meta">{{ row.message }}</span>
+    <span style="color:var(--text-muted)">→</span>
+  </a>
+  {% empty %}
+  <div class="panel-body muted">No episodes yet. Add a YouTube URL or a local video file above.</div>
+  {% endfor %}
+</div>
+{% endblock %}

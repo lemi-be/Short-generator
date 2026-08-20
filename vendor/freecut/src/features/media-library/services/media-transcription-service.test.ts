@@ -840,6 +840,11 @@ describe('mediaTranscriptionService.transcribeMedia', () => {
                 startSeconds: 0.2,
                 endSeconds: 1.4,
                 text: 'Fresh nested phrase',
+                words: [
+                  { text: 'Fresh', start: 0, end: 0.3 },
+                  { text: 'nested', start: 0.33, end: 0.7 },
+                  { text: 'phrase', start: 0.73, end: 1.2 },
+                ],
               },
             ],
           }),

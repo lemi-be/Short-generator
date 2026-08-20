@@ -56,12 +56,20 @@ export interface AiOutput<K extends AiOutputKind> {
 
 /* ───────────────── Payload shapes ───────────────── */
 
+export interface TranscriptPayloadSegment {
+  text: string
+  start: number
+  end: number
+  /** Word-level timings (source-relative) for karaoke captions. */
+  words?: Array<{ text: string; start: number; end: number }>
+}
+
 export interface TranscriptPayload {
   language?: string
   quantization: MediaTranscriptQuantization
   modelVariant: MediaTranscriptModel
   text: string
-  segments: Array<{ text: string; start: number; end: number }>
+  segments: TranscriptPayloadSegment[]
 }
 
 export type CaptionsPayload = {

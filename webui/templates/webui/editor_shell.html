@@ -26,7 +26,7 @@
 </head>
 <body>
   <div id="topbar">
-    <a href="{% url 'clip_editor' video_id %}">&larr; Back</a>
+    <a href="{% url 'home' %}">Projects</a>
     <strong>FreeCut</strong> &mdash; {{ filename }} ({{ duration|floatformat:0 }}s)
     {% if has_srt %}| <a href="{{ srt_url }}" download>Transcript (.srt)</a>{% endif %}
     | <a href="{{ source_url }}" target="_blank">View source</a>
@@ -34,15 +34,14 @@
     <span id="cap" class="bad">checking…</span>
   </div>
   <div id="hint">
-    <strong>Connect this project once:</strong> in the editor, open <strong>Projects</strong>,
-    then <strong>Open workspace</strong> and select this folder:
+    <strong>Workspace:</strong> the editor opens straight on your project list. On first
+    visit it will ask you to pick this folder — do it once and it is remembered:
     <code id="ws">{{ workspace }}</code>
-    <span class="step">&mdash; your sources, transcripts, audio, logos and stock clips are already in it.
-    It is remembered after the first pick.</span>
+    <span class="step">&mdash; your sources, transcripts, audio, logos and stock clips are already in it.</span>
     <button id="hide-hint" type="button">Got it</button>
     <div id="exports"></div>
   </div>
-  <iframe id="freecut" src="{{ editor_url }}" allow="clipboard-write; fullscreen"></iframe>
+  <iframe id="freecut" src="{{ editor_start_url }}" allow="clipboard-write; fullscreen"></iframe>
 
   <script>
     const exportsUrl = "{% url 'freecut_exports' %}";
@@ -71,7 +70,13 @@
         '(the COOP/COEP headers are already set by this page).';
     }
 
+    const HINT_KEY = 'freecut_ws_hint_dismissed';
+    if (localStorage.getItem(HINT_KEY)) {
+      hint.style.display = 'none';
+      document.querySelector('iframe').style.height = 'calc(100% - 41px)';
+    }
     document.getElementById('hide-hint').addEventListener('click', () => {
+      localStorage.setItem(HINT_KEY, '1');
       hint.style.display = 'none';
       document.querySelector('iframe').style.height = 'calc(100% - 41px)';
     });
@@ -81,11 +86,7 @@
         .then(r => r.json())
         .then(data => {
           const box = document.getElementById('exports');
-          if (!data.exports || !data.exports.length) {
-            box.textContent = 'No exports yet \u2014 after you Export in the editor they appear here.';
-            box.style.color = '#93c5fd';
-            return;
-          }
+          if (!data.exports || !data.exports.length) return;
           box.innerHTML = '<strong>Exports:</strong> ' + data.exports.map(e =>
             '<a href="/output/' + e.path.split('/').map(encodeURIComponent).join('/') +
             '" target="_blank">' + e.name + '</a>'

@@ -5,6 +5,8 @@ export interface SubtitleCue {
   startSeconds: number
   endSeconds: number
   text: string
+  /** Word timings (relative to this cue's start) — karaoke caption source. */
+  words?: Array<{ text: string; start: number; end: number }>
 }
 
 export interface SubtitleParseResult {

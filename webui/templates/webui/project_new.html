@@ -1,0 +1,47 @@
+{% extends "webui/base.html" %}
+{% block title %}New project — Short Factory{% endblock %}
+{% block content %}
+<a href="{% url 'home' %}" class="meta" style="margin-bottom:.75rem;display:inline-block">&larr; Back to projects</a>
+<h1 style="margin-bottom:.9rem">New project</h1>
+
+{% if error %}<div class="msg-error">{{ error }}</div>{% endif %}
+
+<form method="POST" action="{% url 'project_new' %}" enctype="multipart/form-data" style="max-width:520px">
+  {% csrf_token %}
+  <div class="panel" style="display:flex;flex-direction:column;gap:1rem;padding:1rem">
+    <label class="field">Client name
+      <input type="text" name="name" placeholder="e.g. Acme Podcast" required autofocus>
+    </label>
+    <label class="field">Caption font
+      <select name="caption_font">
+        {% for value, label in fonts %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="field">Caption color
+      <input type="color" name="caption_color" value="#FFFFFF" style="height:2.1rem;padding:.1rem">
+    </label>
+    <label class="field">Caption position
+      <select name="caption_position">
+        {% for value, label in positions %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="field">Lower-third text (optional)
+      <input type="text" name="brand_lower_third" placeholder="e.g. Acme Podcast">
+    </label>
+    <label class="field">Branding logo (optional)
+      <input type="file" name="brand_logo" accept="image/png,image/jpeg,image/webp">
+    </label>
+    <label class="field">Default template
+      <select name="default_template">
+        <option value="stage_solo_speaker">Stage &amp; Solo Speaker</option>
+        <option value="podcast_split_screen">Podcast &amp; Dialogue</option>
+      </select>
+    </label>
+    <div class="flex" style="justify-content:flex-end">
+      <a class="btn ghost" href="{% url 'home' %}">Cancel</a>
+      <button class="btn green" type="submit">Create project →</button>
+    </div>
+  </div>
+</form>
+<p class="meta mt-1" style="max-width:520px">Only the client name is required — everything else can be skipped and changed later from inside the project.</p>
+{% endblock %}

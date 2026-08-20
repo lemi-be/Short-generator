@@ -1,26 +1,30 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
+import zipfile
 from pathlib import Path
 
 from django.conf import settings
 from django.db import transaction
 from django.http import FileResponse, Http404, HttpResponse, HttpResponseNotFound, HttpResponseRedirect, JsonResponse
-from django.shortcuts import redirect, render
+from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
+from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from urllib.parse import quote
 
-from .models import Clip
+from .models import ClientProject, Clip, Episode, RenderJob
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
+# ── Small formatting / fs helpers ──────────────────────────────────────
+
 def _fmt_ts(seconds: float) -> str:
-    """Convert float seconds to SRT format: HH:MM:SS,mmm"""
     total_ms = max(0, int(round(float(seconds) * 1000)))
     ms = total_ms % 1000
     total_s = total_ms // 1000
@@ -32,7 +36,6 @@ def _fmt_ts(seconds: float) -> str:
 
 
 def _parse_srt(path: Path):
-    """Return list of dicts: {index, start, end, text} from an SRT file."""
     text = path.read_text(encoding="utf-8")
     blocks = re.split(r"\n\s*\n", text.strip())
     segments = []
@@ -83,313 +86,488 @@ def _ffprobe(path: Path, entry: str = "format=duration"):
     return r.stdout.strip() if r.returncode == 0 else "0"
 
 
-def _get_video_status(video_id):
+def _read_video_title(video_id: str) -> str:
+    title_file = Path(settings.OUTPUT_DIR) / f"source_{video_id}.title"
+    try:
+        return title_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _transcript_for(video_id: str):
+    srt_path = Path(settings.OUTPUT_DIR) / f"source_{video_id}.srt"
+    if not srt_path.exists():
+        return None
+    return _parse_srt(srt_path)
+
+
+def _source_path(video_id: str) -> Path:
+    return Path(settings.OUTPUT_DIR) / f"source_{video_id}.mp4"
+
+
+def _short_name(episode: Episode, idx: int) -> str:
+    return f"{episode.project.slug}_{episode.pk:04d}_clip{idx:02d}.mp4"
+
+
+def _rendered_shorts(episode: Episode):
     out = Path(settings.OUTPUT_DIR)
-    mp4 = out / f"source_{video_id}.mp4"
-    srt = out / f"source_{video_id}.srt"
-
-    status = []
-    if mp4.exists():
-        status.append(("downloaded", "Done"))
-    else:
-        return status  # nothing else possible
-
-    if srt.exists():
-        segs = _parse_srt(srt)
-        status.append(("transcribed", f"{len(segs)} segments"))
-
-    clips = Clip.objects.filter(video_id=video_id).count()
-    if clips:
-        status.append(("clips", f"{clips} clip{'s' if clips > 1 else ''}"))
-
-    shorts = list(out.glob(f"short_{video_id}_*.mp4"))
-    if shorts:
-        status.append(("generated", f"{len(shorts)} short{'s' if len(shorts) > 1 else ''}"))
-
-    return status
+    return sorted(out.glob(f"{episode.project.slug}_{episode.pk:04d}_clip*.mp4"))
 
 
-def _get_source_videos():
-    out_dir = Path(settings.OUTPUT_DIR)
-    videos = []
-    for f in sorted(out_dir.glob("source_*.mp4")):
-        vid = f.stem.replace("source_", "", 1)
-        dur = _ffprobe(f)
-        srt_path = out_dir / f"{f.stem}.srt"
-        srt_segments = _parse_srt(srt_path) if srt_path.exists() else []
-        videos.append(
-            {
-                "id": vid,
-                "filename": f.name,
-                "duration": float(dur) if dur else 0,
-                "srt_count": len(srt_segments),
-                "status_chain": _get_video_status(vid),
-            }
-        )
-    return videos
-
-
-# ── Views ──────────────────────────────────────────────────────────
-
-def _home_context(extra=None):
-    ctx = {
-        "videos": _get_source_videos(),
-        "exports": _collect_exports(),
+def _caption_style(project: ClientProject) -> dict:
+    return {
+        "font": project.caption_font,
+        "color": project.caption_color,
+        "position": project.caption_position,
     }
-    if extra:
-        ctx.update(extra)
-    return ctx
 
+
+def _branding(project: ClientProject) -> dict:
+    logo = None
+    if project.brand_logo:
+        candidate = Path(settings.OUTPUT_DIR) / "branding" / project.slug / "branding.png"
+        if candidate.exists():
+            logo = str(candidate)
+    return {
+        "logo": logo,
+        "lower_third": project.brand_lower_third,
+    }
+
+
+# ── Tally state ────────────────────────────────────────────────────────
+
+def _episode_state(episode: Episode):
+    """Return (color, message, counts) where color in {red, amber, green, off}."""
+    source = _source_path(episode.video_id)
+    srt = Path(settings.OUTPUT_DIR) / f"source_{episode.video_id}.srt"
+    clips = list(episode.clips.all())
+    active = episode.render_jobs.exclude(
+        status__in=[RenderJob.STATUS_DONE, RenderJob.STATUS_FAILED]
+    ).first()
+    shorts = _rendered_shorts(episode)
+
+    if active:
+        return "amber", f"rendering {active.progress}%", {"rendering": True}
+    if not source.exists():
+        return "off", "no source", {}
+    if not srt.exists():
+        return "red", "not transcribed", {}
+    if not clips:
+        return "red", "no clips marked", {"unmarked": 0, "clips": 0}
+    unconfirmed = sum(1 for c in clips if not c.confirmed)
+    if unconfirmed:
+        return "red", f"{unconfirmed} clip{'s' if unconfirmed != 1 else ''} to review", {
+            "unmarked": 0,
+            "clips": len(clips),
+            "unconfirmed": unconfirmed,
+            "rendered": len(shorts),
+        }
+    if episode.delivered:
+        return "green", "delivered", {"clips": len(clips), "rendered": len(shorts)}
+    return "green", "ready to deliver", {"clips": len(clips), "rendered": len(shorts)}
+
+
+def _project_state(project: ClientProject):
+    episodes = list(project.episodes.all())
+    if not episodes:
+        return "off", "no episodes", {}
+    order = {"red": 0, "amber": 1, "green": 2, "off": 3}
+    states = [_episode_state(ep) for ep in episodes]
+    worst = min(states, key=lambda s: order[s[0]])
+    color = worst[0]
+    message = f"{len(episodes)} episode{'s' if len(episodes) != 1 else ''}"
+    counts = {
+        "unmarked": sum(s[2].get("unconfirmed", 0) for s in states),
+        "rendering": sum(1 for s in states if s[2].get("rendering")),
+        "delivered": sum(1 for s in states if s[0] == "green"),
+    }
+    if color == "red":
+        message = f"{counts['unmarked']} clip{'s' if counts['unmarked'] != 1 else ''} to review"
+    elif color == "amber":
+        message = f"{counts['rendering']} rendering"
+    elif color == "green" and counts["delivered"] == len(episodes):
+        message = "all clear"
+    return color, message, counts
+
+
+# ── Home ───────────────────────────────────────────────────────────────
 
 def home(request):
-    return render(request, "webui/home.html", _home_context())
-
-
-@csrf_exempt
-def download(request):
-    if request.method == "POST":
-        url = request.POST.get("url", "").strip()
-        if not url:
-            return redirect("home")
-        try:
-            from shorts_generator.local.downloader import download_youtube_local
-            download_youtube_local(url, fmt="720")
-        except Exception as e:
-            return render(request, "webui/home.html", _home_context({
-                "error": f"Download failed: {e}",
-            }))
-    return redirect("home")
-
-
-@csrf_exempt
-def transcribe(request, video_id):
-    out = Path(settings.OUTPUT_DIR)
-    source = out / f"source_{video_id}.mp4"
-    if not source.exists():
-        return redirect("home")
-    try:
-        from shorts_generator.local.transcriber import transcribe_local
-        transcribe_local(str(source))
-    except Exception as e:
-        return render(request, "webui/home.html", _home_context({
-            "error": f"Transcribe failed: {e}",
-        }))
-    return redirect("home")
-
-
-def clip_editor(request, video_id):
-    out_dir = Path(settings.OUTPUT_DIR)
-    source_path = out_dir / f"source_{video_id}.mp4"
-    srt_path = out_dir / f"source_{video_id}.srt"
-
-    if not source_path.exists():
-        return redirect("home")
-
-    segments = _parse_srt(srt_path) if srt_path.exists() else []
-    for seg in segments:
-        seg["ts"] = _fmt_ts(seg["start"])
-        seg["te"] = _fmt_ts(seg["end"])
-
-    clips = list(Clip.objects.filter(video_id=video_id))
-    for c in clips:
-        c.start_ts = _fmt_ts(c.start_time)
-        c.end_ts = _fmt_ts(c.end_time)
-        c.duration_ts = _fmt_ts(c.end_time - c.start_time)
-
-    duration = float(_ffprobe(source_path)) or 0
-    generated_shorts = sorted(out_dir.glob(f"short_{video_id}_*.mp4"))
-    msg = request.GET.get("msg", "")
-
-    return render(request, "webui/clip_editor.html", {
-        "video_id": video_id,
-        "filename": source_path.name,
-        "duration": duration,
-        "segments": segments,
-        "clips": clips,
-        "generated_shorts": generated_shorts,
-        "msg": msg,
+    projects = []
+    for p in ClientProject.objects.all():
+        color, message, counts = _project_state(p)
+        projects.append({"project": p, "color": color, "message": message, "counts": counts})
+    order = {"red": 0, "amber": 1, "green": 2, "off": 3}
+    projects.sort(key=lambda r: order[r["color"]])
+    rail = "red"
+    if projects:
+        rail = projects[0]["color"]
+    else:
+        rail = "green"
+    return render(request, "webui/home.html", {
+        "projects": projects,
+        "tally": rail,
+        "error": request.GET.get("error", ""),
+        "msg": request.GET.get("msg", ""),
     })
 
 
 @csrf_exempt
-@transaction.atomic
-def add_clip(request, video_id):
+def project_new(request):
     if request.method == "POST":
-        start = float(request.POST["start"])
-        end = float(request.POST["end"])
-        if end > start:
-            Clip.objects.create(video_id=video_id, start_time=start, end_time=end)
-    return HttpResponseRedirect(reverse("clip_editor", kwargs={"video_id": video_id}))
+        name = request.POST.get("name", "").strip()
+        if not name:
+            return render(request, "webui/project_new.html", {
+                "tally": "red",
+                "error": "Client name is required.",
+                "fonts": ClientProject.CAPTION_FONT_CHOICES,
+                "positions": ClientProject.CAPTION_POSITION_CHOICES,
+            })
+        project = ClientProject.objects.create(
+            name=name,
+            caption_font=request.POST.get("caption_font", "inter"),
+            caption_color=request.POST.get("caption_color", "#FFFFFF") or "#FFFFFF",
+            caption_position=request.POST.get("caption_position", "lower_third"),
+            brand_lower_third=request.POST.get("brand_lower_third", "").strip(),
+            default_template=request.POST.get("default_template", "stage_solo_speaker"),
+        )
+        # Optional branding logo upload.
+        logo = request.FILES.get("brand_logo")
+        if logo:
+            brand_dir = Path(settings.OUTPUT_DIR) / "branding" / project.slug
+            brand_dir.mkdir(parents=True, exist_ok=True)
+            dest = brand_dir / "branding.png"
+            with open(dest, "wb") as f:
+                for chunk in logo.chunks():
+                    f.write(chunk)
+            project.brand_logo = str(dest)
+            project.save(update_fields=["brand_logo"])
+        return redirect("project_detail", project_id=project.pk)
+    return render(request, "webui/project_new.html", {
+        "tally": "amber",
+        "fonts": ClientProject.CAPTION_FONT_CHOICES,
+        "positions": ClientProject.CAPTION_POSITION_CHOICES,
+        "error": "",
+    })
+
+
+# ── Project detail / episodes ──────────────────────────────────────────
+
+def project_detail(request, project_id):
+    project = get_object_or_404(ClientProject, pk=project_id)
+    episodes = []
+    for ep in project.episodes.all():
+        color, message, counts = _episode_state(ep)
+        episodes.append({"episode": ep, "color": color, "message": message, "counts": counts})
+    rail = "red"
+    order = {"red": 0, "amber": 1, "green": 2, "off": 3}
+    if episodes:
+        rail = min((e["color"] for e in episodes), key=lambda c: order[c])
+    return render(request, "webui/project_detail.html", {
+        "project": project,
+        "episodes": episodes,
+        "tally": rail,
+        "error": request.GET.get("error", ""),
+        "msg": request.GET.get("msg", ""),
+    })
 
 
 @csrf_exempt
-@transaction.atomic
-def delete_clip(request, video_id, clip_id):
-    if request.method == "POST":
-        Clip.objects.filter(id=clip_id, video_id=video_id).delete()
-    return HttpResponseRedirect(reverse("clip_editor", kwargs={"video_id": video_id}))
-
-
-@csrf_exempt
-def generate(request, video_id):
-    clips = Clip.objects.filter(video_id=video_id)
-    if not clips.exists():
-        return redirect("clip_editor", video_id=video_id)
-
-    template = request.POST.get("template", "stage_solo_speaker")
-
-    out_dir = Path(settings.OUTPUT_DIR)
-    source_path = out_dir / f"source_{video_id}.mp4"
-
-    generated = []
-    errors = []
-    for i, clip in enumerate(clips):
-        out_path = out_dir / f"short_{video_id}_c{clip.id:04d}.mp4"
-        try:
-            from shorts_generator.local.clipper import crop_clip_local
-            # Captions are left out here on purpose: they are added as layers in
-            # the editor and baked in at export time, so nothing is double-burned.
-            crop_clip_local(
-                str(source_path),
-                clip.start_time,
-                clip.end_time,
-                str(out_path),
-                template=template,
-            )
-            generated.append(str(out_path.name))
-            # Record the source window so captions still map even if the Clip
-            # row is later deleted/recreated.
-            meta = out_dir / f"{out_path.stem}.meta.json"
-            meta.write_text(json.dumps({
-                "video_id": video_id,
-                "clip_id": clip.id,
-                "source_start": clip.start_time,
-                "source_end": clip.end_time,
-            }), encoding="utf-8")
-        except Exception as e:
-            errors.append(f"clip {i + 1} ({clip.start_time:.1f}-{clip.end_time:.1f}s): {e}")
-
-    msg = f"Generated {len(generated)} short{'s' if len(generated) != 1 else ''} (template: {template})"
-    if errors:
-        details = "; ".join(errors)
-        msg += f", {len(errors)} failed: {details}"
-
-    # Hand off to the FreeCut editor with the generated short on disk.
-    if generated:
-        target = reverse("editor_shell", kwargs={"video_id": video_id})
-    else:
-        target = reverse("clip_editor", kwargs={"video_id": video_id})
-    return HttpResponseRedirect(f"{target}?msg={quote(msg)}")
-
-
-@csrf_exempt
-def auto_generate(request):
-    """Full auto-pipeline ported from the CLI into the web UI.
-
-    POST: url, num_clips, format, language, min_clip_seconds,
-          max_clip_seconds, template.
-
-    Runs download (if needed) -> transcribe (if needed) -> LLM highlight
-    ranking -> creates Clip rows -> crops each to 9:16 (caption-free, so
-    captions land on the editor timeline instead of being baked in) ->
-    redirects into the FreeCut editor.
-    """
+def episode_add(request, project_id):
+    project = get_object_or_404(ClientProject, pk=project_id)
     if request.method != "POST":
-        return redirect("home")
-
+        return redirect("project_detail", project_id=project.pk)
     url = request.POST.get("url", "").strip()
-    if not url:
-        return redirect("home")
-    num_clips = max(1, min(20, int(request.POST.get("num_clips", 10) or 10)))
-    fmt = request.POST.get("format", "720") or "720"
-    language = (request.POST.get("language", "") or "").strip() or None
-    min_sec = max(5, int(request.POST.get("min_clip_seconds", 30) or 30))
-    max_sec = max(min_sec, int(request.POST.get("max_clip_seconds", 60) or 60))
-    template = request.POST.get("template", "stage_solo_speaker")
+    local_path = request.POST.get("path", "").strip()
+    if not url and not local_path:
+        return redirect(f"{reverse('project_detail', kwargs={'project_id': project.pk})}?error={quote('Provide a YouTube URL or a local video file.')}")
 
     out_dir = Path(settings.OUTPUT_DIR)
+    out_dir.mkdir(parents=True, exist_ok=True)
     try:
         from shorts_generator.local.downloader import download_youtube_local
-        from shorts_generator.local.llm import call_local_llm
         from shorts_generator.local.transcriber import transcribe_local
-        from shorts_generator.highlights import get_highlights
 
-        source_path = Path(download_youtube_local(url, fmt=fmt))
-        video_id = source_path.stem.replace("source_", "", 1)
-        if not str(source_path).startswith(str(out_dir)):
+        if url:
+            source_path = Path(download_youtube_local(url, fmt="720"))
+            video_id = source_path.stem.replace("source_", "", 1)
+            if not str(source_path).startswith(str(out_dir)):
+                target = out_dir / f"source_{video_id}.mp4"
+                if not target.exists() or target.stat().st_size != source_path.stat().st_size:
+                    shutil.copy2(source_path, target)
+                source_path = target
+        else:
+            src = Path(local_path).expanduser()
+            if not src.exists():
+                raise RuntimeError(f"Local file not found: {local_path}")
+            video_id = re.sub(r"[^A-Za-z0-9_-]", "_", src.stem)
             target = out_dir / f"source_{video_id}.mp4"
-            if not target.exists() or target.stat().st_size != source_path.stat().st_size:
-                import shutil
-                shutil.copy2(source_path, target)
+            if not target.exists() or target.stat().st_size != src.stat().st_size:
+                shutil.copy2(src, target)
             source_path = target
 
-        transcript = transcribe_local(str(source_path), language=language)
+        transcript = transcribe_local(str(source_path))
         if not transcript.get("segments"):
             raise RuntimeError("Whisper produced no segments.")
 
-        result = get_highlights(
-            transcript,
-            num_clips=num_clips,
-            llm_fn=call_local_llm,
-            min_clip_seconds=min_sec,
-            max_clip_seconds=max_sec,
+        title = _read_video_title(video_id)
+        episode = Episode.objects.create(
+            project=project,
+            video_id=video_id,
+            title=title or video_id,
+            source_file=str(source_path),
         )
-        highlights = sorted(
-            result.get("highlights", []),
-            key=lambda h: int(h.get("score", 0) or 0),
-            reverse=True,
-        )[:num_clips]
-        if not highlights:
-            raise RuntimeError("Highlight generator returned zero clips.")
-
-        from shorts_generator.local.clipper import crop_clip_local
-
-        # Reuse existing Clip rows that already cover the same windows, so
-        # re-running doesn't duplicate DB rows.
-        existing = list(Clip.objects.filter(video_id=video_id))
-        generated = []
-        for h in highlights:
-            s = float(h["start_time"])
-            e = float(h["end_time"])
-            clip = next(
-                (c for c in existing if abs(c.start_time - s) < 0.5 and abs(c.end_time - e) < 0.5),
-                None,
-            )
-            if clip is None:
-                clip = Clip.objects.create(video_id=video_id, start_time=s, end_time=e)
-                existing.append(clip)
-            out_path = out_dir / f"short_{video_id}_c{clip.id:04d}.mp4"
-            try:
-                crop_clip_local(str(source_path), s, e, str(out_path), template=template)
-                meta = out_dir / f"{out_path.stem}.meta.json"
-                meta.write_text(json.dumps({
-                    "video_id": video_id,
-                    "clip_id": clip.id,
-                    "source_start": s,
-                    "source_end": e,
-                }), encoding="utf-8")
-                generated.append(str(out_path.name))
-            except Exception as exc:
-                pass  # keep going; failed clip simply isn't listed
-
-        if not generated:
-            raise RuntimeError("All highlight clips failed to render.")
+        return redirect("episode_mark", episode_id=episode.pk)
     except Exception as exc:
-        return render(request, "webui/home.html", _home_context({
-            "error": f"Auto-generate failed: {exc}",
-        }))
+        return redirect(f"{reverse('project_detail', kwargs={'project_id': project.pk})}?error={quote(str(exc))}")
 
-    msg = (f"Auto-generated {len(generated)} short{'s' if len(generated) != 1 else ''} "
-           f"({template}) from {len(highlights)} highlights")
-    target = reverse("editor_shell", kwargs={"video_id": video_id})
-    return HttpResponseRedirect(f"{target}?msg={quote(msg)}")
+
+# ── Mark clips ─────────────────────────────────────────────────────────
+
+def episode_mark(request, episode_id):
+    episode = get_object_or_404(Episode, pk=episode_id)
+    segments = _transcript_for(episode.video_id)
+    if segments is None:
+        return render(request, "webui/episode_mark.html", {
+            "episode": episode,
+            "segments": [],
+            "clips": [],
+            "tally": "red",
+            "error": "No transcript found. Re-add the episode to transcribe it.",
+        })
+    for seg in segments:
+        seg["ts"] = _fmt_ts(seg["start"])
+        seg["te"] = _fmt_ts(seg["end"])
+
+    clips = list(episode.clips.all())
+    for c in clips:
+        c.start_ts = _fmt_ts(c.start_time)
+        c.end_ts = _fmt_ts(c.end_time)
+        c.duration_ts = _fmt_ts(c.duration)
+
+    color, message, counts = _episode_state(episode)
+    active_job = episode.render_jobs.exclude(
+        status__in=[RenderJob.STATUS_DONE, RenderJob.STATUS_FAILED]
+    ).first()
+    return render(request, "webui/episode_mark.html", {
+        "episode": episode,
+        "segments": segments,
+        "clips": clips,
+        "tally": color,
+        "state_message": message,
+        "active_job": active_job,
+        "msg": request.GET.get("msg", ""),
+    })
+
+
+@csrf_exempt
+def clip_add(request, episode_id):
+    episode = get_object_or_404(Episode, pk=episode_id)
+    if request.method == "POST":
+        try:
+            start = float(request.POST.get("start", ""))
+            end = float(request.POST.get("end", ""))
+            if end > start:
+                Clip.objects.create(episode=episode, start_time=start, end_time=end)
+                return JsonResponse({"ok": True})
+        except (TypeError, ValueError):
+            return JsonResponse({"ok": False, "error": "bad times"}, status=400)
+    return JsonResponse({"ok": False}, status=405)
+
+
+@csrf_exempt
+def clip_delete(request, episode_id, clip_id):
+    episode = get_object_or_404(Episode, pk=episode_id)
+    if request.method == "POST":
+        Clip.objects.filter(pk=clip_id, episode=episode).delete()
+        return JsonResponse({"ok": True})
+    return JsonResponse({"ok": False}, status=405)
+
+
+# ── Async batch render ─────────────────────────────────────────────────
+
+def start_render_job(episode: Episode) -> RenderJob:
+    from .jobs import run_render_job
+    job = RenderJob.objects.create(episode=episode, status=RenderJob.STATUS_QUEUED)
+    from threading import Thread
+    t = Thread(target=run_render_job, args=(job.pk,), daemon=True)
+    t.start()
+    return job
+
+
+@csrf_exempt
+def episode_render(request, episode_id):
+    episode = get_object_or_404(Episode, pk=episode_id)
+    if request.method != "POST":
+        return redirect("episode_mark", episode_id=episode.pk)
+    if not episode.clips.exists():
+        return redirect("episode_mark", episode_id=episode.pk)
+    # Don't stack duplicate jobs for the same episode.
+    active = episode.render_jobs.exclude(
+        status__in=[RenderJob.STATUS_DONE, RenderJob.STATUS_FAILED]
+    ).exists()
+    if active:
+        return redirect("episode_mark", episode_id=episode.pk)
+    start_render_job(episode)
+    return redirect("episode_mark", episode_id=episode.pk)
+
+
+def render_status(request, episode_id):
+    episode = get_object_or_404(Episode, pk=episode_id)
+    job = episode.render_jobs.first()
+    if job is None:
+        return JsonResponse({"status": "none"})
+    return JsonResponse({
+        "status": job.status,
+        "progress": job.progress,
+        "message": job.message,
+        "error": job.error,
+        "finished": job.finished_at.isoformat() if job.finished_at else None,
+    })
+
+
+# ── Quick clip review ──────────────────────────────────────────────────
+
+def _review_clips(episode: Episode):
+    """Return [{clip, short_url, size, index}] for rendered clips."""
+    clips = list(episode.clips.all())
+    out = []
+    for i, clip in enumerate(clips, 1):
+        name = _short_name(episode, i)
+        path = Path(settings.OUTPUT_DIR) / name
+        short_url = reverse("serve_output", args=[name]) if path.exists() else None
+        size = path.stat().st_size if path.exists() else 0
+        out.append({"clip": clip, "short_url": short_url, "size": size, "index": i})
+    return out
+
+
+def episode_review(request, episode_id):
+    episode = get_object_or_404(Episode, pk=episode_id)
+    clips = _review_clips(episode)
+    if not clips:
+        return redirect("episode_mark", episode_id=episode.pk)
+    # Stepper: honor ?idx, else first unconfirmed clip, else last.
+    try:
+        wanted = int(request.GET.get("idx", "") or 0)
+        current = next((c for c in clips if c["index"] == wanted), None)
+    except ValueError:
+        current = None
+    if current is None:
+        current = next((c for c in clips if not c["clip"].confirmed), clips[-1])
+    color = "green" if all(c["clip"].confirmed for c in clips) else "red"
+    return render(request, "webui/episode_review.html", {
+        "episode": episode,
+        "clips": clips,
+        "current": current,
+        "current_idx": current["index"],
+        "total": len(clips),
+        "tally": color,
+        "msg": request.GET.get("msg", ""),
+    })
+
+
+@csrf_exempt
+def clip_confirm(request, episode_id, clip_id):
+    clip = get_object_or_404(Clip, pk=clip_id, episode_id=episode_id)
+    if request.method == "POST":
+        clip.confirmed = True
+        if request.POST.get("caption", "").strip():
+            clip.caption_override = request.POST.get("caption", "").strip()
+        clip.save()
+        return redirect("episode_review", episode_id=episode_id)
+    return redirect("episode_review", episode_id=episode_id)
+
+
+@csrf_exempt
+def clip_trim(request, episode_id, clip_id):
+    """Adjust a clip's in/out, then re-render just that clip synchronously."""
+    episode = get_object_or_404(Episode, pk=episode_id)
+    clip = get_object_or_404(Clip, pk=clip_id, episode=episode)
+    if request.method == "POST":
+        try:
+            start = float(request.POST.get("start", ""))
+            end = float(request.POST.get("end", ""))
+            if end > start:
+                clip.start_time = start
+                clip.end_time = end
+                clip.save()
+        except (TypeError, ValueError):
+            pass
+    clips = sorted(episode.clips.all(), key=lambda c: c.start_time)
+    idx = clips.index(clip) + 1
+    out_path = Path(settings.OUTPUT_DIR) / _short_name(episode, idx)
+    try:
+        from .jobs import render_one_clip
+        render_one_clip(episode, clip, idx, out_path)
+        msg = "Clip trimmed and re-rendered."
+    except Exception as exc:
+        msg = f"Re-render failed: {exc}"
+    return redirect(f"{reverse('episode_review', kwargs={'episode_id': episode_id})}?msg={quote(msg)}")
+
+
+# ── Package & deliver ──────────────────────────────────────────────────
+
+def episode_deliver(request, episode_id):
+    episode = get_object_or_404(Episode, pk=episode_id)
+    clips = _review_clips(episode)
+    color, message, counts = _episode_state(episode)
+    zip_rel = f"deliveries/{episode.project.slug}/{episode.pk:04d}_batch.zip"
+    return render(request, "webui/episode_deliver.html", {
+        "episode": episode,
+        "clips": clips,
+        "tally": color if episode.delivered else "amber",
+        "zip_rel": zip_rel,
+        "zip_exists": (Path(settings.OUTPUT_DIR) / zip_rel).exists(),
+        "msg": request.GET.get("msg", ""),
+    })
+
+
+@csrf_exempt
+def episode_package(request, episode_id):
+    episode = get_object_or_404(Episode, pk=episode_id)
+    if request.method != "POST":
+        return redirect("episode_deliver", episode_id=episode.pk)
+
+    out_dir = Path(settings.OUTPUT_DIR)
+    delivery_dir = out_dir / "deliveries" / episode.project.slug / f"{episode.pk:04d}"
+    delivery_dir.mkdir(parents=True, exist_ok=True)
+
+    copied = []
+    for i, clip in enumerate(sorted(episode.clips.all(), key=lambda c: c.start_time), 1):
+        name = _short_name(episode, i)
+        src = out_dir / name
+        if src.exists():
+            dest = delivery_dir / f"{episode.project.slug}_{episode.pk:04d}_clip{i:02d}.mp4"
+            shutil.copy2(src, dest)
+            copied.append(dest)
+
+    zip_path = out_dir / "deliveries" / episode.project.slug / f"{episode.pk:04d}_batch.zip"
+    if copied:
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for f in copied:
+                zf.write(f, arcname=f.name)
+        episode.delivered = True
+        episode.save(update_fields=["delivered"])
+    return redirect(f"{reverse('episode_deliver', kwargs={'episode_id': episode.pk})}?msg={quote('Packaged & marked delivered.')}")
+
+
+# ── Transcript / output serving ────────────────────────────────────────
+
+def download_transcript(request, video_id):
+    srt_path = Path(settings.OUTPUT_DIR) / f"source_{video_id}.srt"
+    if not srt_path.exists():
+        raise Http404()
+    response = FileResponse(
+        open(srt_path, "rb"),
+        content_type="text/plain",
+    )
+    response["Content-Disposition"] = f'attachment; filename="source_{video_id}.srt"'
+    return response
 
 
 def _file_response(request, path: Path, content_type: str) -> HttpResponse:
-    """Serve a file with byte-range support (206/416 handled correctly)."""
     size = path.stat().st_size
     range_header = request.META.get("HTTP_RANGE", "")
-
     if range_header:
         m = re.match(r"bytes=(\d*)-(\d*)", range_header.strip())
         if m:
@@ -410,29 +588,9 @@ def _file_response(request, path: Path, content_type: str) -> HttpResponse:
             response["Content-Length"] = str(length)
             response["Accept-Ranges"] = "bytes"
             return response
-
     response = FileResponse(open(path, "rb"), content_type=content_type)
     response["Content-Length"] = str(size)
     response["Accept-Ranges"] = "bytes"
-    return response
-
-
-def serve_output(request, filename):
-    path = Path(settings.OUTPUT_DIR) / filename
-    if not path.exists() or not path.is_file():
-        raise Http404()
-    return _file_response(request, path, _mime_for(path.name))
-
-
-def download_transcript(request, video_id):
-    srt_path = Path(settings.OUTPUT_DIR) / f"source_{video_id}.srt"
-    if not srt_path.exists():
-        raise Http404()
-    response = FileResponse(
-        open(srt_path, "rb"),
-        content_type="text/plain",
-    )
-    response["Content-Disposition"] = f'attachment; filename="source_{video_id}.srt"'
     return response
 
 
@@ -452,15 +610,23 @@ def _mime_for(name: str) -> str:
         return "audio/ogg"
     if ext in (".srt",):
         return "text/plain"
+    if ext == ".zip":
+        return "application/zip"
+    if ext in (".png",):
+        return "image/png"
+    if ext in (".jpg", ".jpeg"):
+        return "image/jpeg"
     return "application/octet-stream"
 
 
-# ── FreeCut browser editor ──────────────────────────────────────────
-# FreeCut (vendor/freecut) is the only video editor now. It is a client-side
-# WebGPU/WebCodecs app that needs cross-origin isolation (SharedArrayBuffer)
-# and plain static hosting with byte-range support. The workspace is the
-# output dir, so sources, transcripts, assets and editor exports all live in
-# one place; FreeCut writes exports to projects/<id>/exports/.
+def serve_output(request, filename):
+    path = Path(settings.OUTPUT_DIR) / filename
+    if not path.exists() or not path.is_file():
+        raise Http404()
+    return _file_response(request, path, _mime_for(path.name))
+
+
+# ── FreeCut browser editor (advanced mode) ─────────────────────────────
 
 _EDITOR_MIME = {
     ext: ct
@@ -494,7 +660,6 @@ _EDITOR_MIME = {
 
 
 def _isolated_headers(response):
-    """Cross-origin-isolate a response so FreeCut's SharedArrayBuffer works."""
     response["Cross-Origin-Opener-Policy"] = "same-origin"
     response["Cross-Origin-Embedder-Policy"] = "require-corp"
     response["Cross-Origin-Resource-Policy"] = "same-origin"
@@ -502,7 +667,6 @@ def _isolated_headers(response):
 
 
 def _collect_exports():
-    """Newest-first mp4s that FreeCut wrote into the workspace exports dir."""
     ws = Path(settings.FREECUT_WORKSPACE)
     exports = []
     if ws.is_dir():
@@ -527,13 +691,6 @@ def freecut_exports(request):
 
 @csrf_exempt
 def editor_app(request, path=""):
-    """Serve the vendored FreeCut build under /editor/.
-
-    Maps every URL under /editor/ onto the committed dist/ tree (assets,
-    wasm, models, SW, SPA fallback for client-side routes). All responses
-    are cross-origin-isolated so the WebCodecs renderer can use
-    SharedArrayBuffer.
-    """
     dist = Path(settings.FREECUT_DIST)
     if not dist.is_dir():
         return _isolated_headers(HttpResponse(
@@ -541,22 +698,17 @@ def editor_app(request, path=""):
             "`npm ci && npm run build` in vendor/freecut.",
             status=500,
         ))
-
     rel = (path or "index.html").replace("\\", "/")
     if rel.startswith("/") or ".." in rel.split("/"):
         return _isolated_headers(HttpResponseNotFound("not found"))
-
     target = (dist / rel).resolve()
     if not str(target).startswith(str(dist.resolve())):
         return _isolated_headers(HttpResponseNotFound("not found"))
-
     if target.is_dir():
         target = target / "index.html"
     if target.is_file():
         content_type = _EDITOR_MIME.get(target.suffix.lower(), "application/octet-stream")
         return _isolated_headers(_file_response(request, target, content_type))
-
-    # SPA fallback: extensionless client-side routes resolve to index.html.
     if not target.suffix:
         index_html = dist / "index.html"
         if index_html.is_file():
@@ -566,12 +718,10 @@ def editor_app(request, path=""):
 
 
 def editor_shell(request, video_id):
-    """Full page embedding the FreeCut editor for one source video."""
     out_dir = Path(settings.OUTPUT_DIR)
     source_path = out_dir / f"source_{video_id}.mp4"
     if not source_path.exists():
         return redirect("home")
-
     source_url = reverse("serve_output", args=[source_path.name])
     return _isolated_headers(render(request, "webui/editor_shell.html", {
         "video_id": video_id,
@@ -582,6 +732,6 @@ def editor_shell(request, video_id):
         "srt_url": reverse("download_transcript", args=[video_id]),
         "workspace": str(Path(settings.FREECUT_WORKSPACE)),
         "editor_url": reverse("editor_app"),
+        "editor_start_url": reverse("editor_app") + "projects",
         "exports": _collect_exports(),
     }))
-

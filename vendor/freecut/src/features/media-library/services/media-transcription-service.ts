@@ -285,6 +285,15 @@ function buildTimelineTranscriptCaptionCues(
     startSeconds: segment.start,
     endSeconds: segment.end,
     text: segment.text,
+    // Keep word timings for karaoke captions. Cue-relative (subtract the
+    // cue's start) so re-offsetting works when cues land on a segment.
+    words: segment.words
+      ?.filter((word) => word.end > word.start)
+      .map((word) => ({
+        text: word.text,
+        start: Math.max(0, word.start - segment.start),
+        end: Math.max(0, word.end - segment.start),
+      })),
   }))
 }
 

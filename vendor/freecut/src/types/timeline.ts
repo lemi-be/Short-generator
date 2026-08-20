@@ -17,15 +17,34 @@ export interface TimelineItemCornerPin {
   referenceHeight?: number
 }
 
+/** Karaoke caption modes. `'word'` highlights the currently-spoken word. */
+export type CaptionKaraokeStyle = 'off' | 'word'
+
+/** One word inside a transcript caption cue. Times are cue-relative seconds. */
+export interface TranscriptCaptionWord {
+  text: string
+  start: number
+  end: number
+}
+
 export interface TimelineTranscriptCaptionCue {
   id: string
   startSeconds: number
   endSeconds: number
   text: string
+  /**
+   * Per-word timings (relative to this cue's `startSeconds`). Drives the
+   * karaoke/highlight style — when present each word can be recolored while
+   * it is being spoken.
+   */
+  words?: TranscriptCaptionWord[]
 }
 
 export type TimelineTranscriptCaptionStyle = TextStyleFields & {
   transform?: TransformProperties
+  /** Karaoke mode: highlight the currently-spoken word in `karaokeColor`. */
+  karaokeStyle?: CaptionKaraokeStyle
+  karaokeColor?: string
 }
 
 export interface TimelineTranscriptCaptions {
@@ -411,6 +430,8 @@ export interface SubtitleSegmentCue {
   startSeconds: number
   endSeconds: number
   text: string
+  /** Word timings (relative to this cue's start) — karaoke source. */
+  words?: TranscriptCaptionWord[]
 }
 
 /**
@@ -435,6 +456,9 @@ export type SubtitleSegmentItem = BaseTimelineItem &
     /** Cue list, sorted by `startSeconds`. Times are segment-relative. */
     cues: SubtitleSegmentCue[]
     color: string
+    /** Karaoke mode: highlight the currently-spoken word (requires word-timed cues). */
+    karaokeStyle?: CaptionKaraokeStyle
+    karaokeColor?: string
   }
 
 export type SubtitleSegmentSource =

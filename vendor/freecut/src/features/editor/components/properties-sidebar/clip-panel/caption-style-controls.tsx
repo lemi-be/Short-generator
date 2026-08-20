@@ -13,6 +13,7 @@ import {
   detectActiveCaptionPreset,
   resolveCaptionStylePatch,
 } from '@/shared/typography/caption-style-presets'
+import { DEFAULT_KARAOKE_COLOR } from '@/shared/typography/caption-karaoke'
 
 type CaptionStylableItem = SubtitleSegmentItem | TextItem
 
@@ -74,6 +75,13 @@ export const CaptionStyleControls = memo(function CaptionStyleControls({
   const activePreset = useMemo(() => (sample ? detectActiveCaptionPreset(sample) : null), [sample])
 
   if (!sample) return null
+
+  // Karaoke needs word-timed cues. A virtual transcript sample carries no
+  // cues (they live on the clip) — treat it as eligible; real segments only
+  // qualify when their cues actually ship word timings.
+  const karaokeEligible =
+    sample.type === 'subtitle' &&
+    (sample.cues.length === 0 || sample.cues.some((cue) => cue.words && cue.words.length > 0))
 
   const sampleColor = sample.color ?? '#ffffff'
   const sampleFontSize = sample.fontSize ?? Math.max(36, Math.round(canvasHeight * 0.045))
@@ -197,6 +205,53 @@ export const CaptionStyleControls = memo(function CaptionStyleControls({
             className="flex-1 min-w-0"
           />
         </PropertyRow>
+      )}
+
+      {karaokeEligible && (
+        <>
+          <Separator className="my-1" />
+
+          <PropertyRow
+            label={t('editor.captionStyleControls.highlight')}
+            tooltip={t('editor.captionStyleControls.highlightHint')}
+          >
+            <div className="flex flex-1 min-w-0">
+              <button
+                type="button"
+                onClick={() =>
+                  applyPatch({
+                    karaokeStyle: sample.karaokeStyle === 'word' ? 'off' : 'word',
+                  } as Partial<CaptionStylableItem>)
+                }
+                className={cn(
+                  'h-7 w-full rounded border text-xs transition-colors',
+                  sample.karaokeStyle === 'word'
+                    ? 'border-border/70 bg-secondary/60 text-foreground'
+                    : 'border-border hover:bg-secondary/40 text-muted-foreground',
+                )}
+              >
+                {sample.karaokeStyle === 'word'
+                  ? t('editor.captionStyleControls.on')
+                  : t('editor.captionStyleControls.off')}
+              </button>
+            </div>
+          </PropertyRow>
+
+          {sample.karaokeStyle === 'word' && (
+            <ColorPicker
+              label={t('editor.captionStyleControls.highlightColor')}
+              color={sample.karaokeColor ?? DEFAULT_KARAOKE_COLOR}
+              onChange={(karaokeColor) =>
+                applyPatch({ karaokeColor } as Partial<CaptionStylableItem>)
+              }
+              onLiveChange={(karaokeColor) =>
+                applyPatch({ karaokeColor } as Partial<CaptionStylableItem>)
+              }
+              onReset={() => applyPatch({ karaokeColor: undefined } as Partial<CaptionStylableItem>)}
+              defaultColor={DEFAULT_KARAOKE_COLOR}
+            />
+          )}
+        </>
       )}
     </div>
   )

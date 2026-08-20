@@ -441,39 +441,28 @@ describe('MediaCard', () => {
     expect(typeof generateProxyCall?.[1]).toBe('function')
   })
 
-  it('opens the transcribe dialog and defers work until the user confirms', async () => {
+  it('does not offer in-browser transcription from the media action menu', () => {
+    // Transcripts are attached by the shorts pipeline, so the generate/refresh
+    // actions and the transcribe dialog are never surfaced.
     const media = makeMedia()
 
     render(<ListMediaCard media={media} />)
 
-    fireEvent.click(screen.getByText('Generate Transcript'))
-
-    // Clicking the menu item opens the dialog; transcription has NOT started.
-    expect(screen.getByTestId('transcribe-dialog')).toBeInTheDocument()
+    expect(screen.queryByText('Generate Transcript')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('transcribe-dialog')).not.toBeInTheDocument()
     expect(mediaTranscriptionRunnerMocks.runMediaTranscriptionJob).not.toHaveBeenCalled()
-
-    fireEvent.click(screen.getByText('Start Transcription'))
-
-    await waitFor(() => {
-      expect(mediaTranscriptionRunnerMocks.runMediaTranscriptionJob).toHaveBeenCalledTimes(1)
-    })
-    const [, options] = mediaTranscriptionRunnerMocks.runMediaTranscriptionJob.mock.calls[0]!
-    expect(options).toEqual(
-      expect.objectContaining({
-        model: 'whisper-base',
-        quantization: 'hybrid',
-        language: undefined,
-      }),
-    )
   })
 
   it('uses transcript wording in the media action menu', () => {
+    // In-browser transcription is disabled: transcripts are attached by the
+    // shorts pipeline, so the generate/refresh actions are never offered.
     const { rerender } = render(<ListMediaCard media={makeMedia()} />)
-    expect(screen.getByText('Generate Transcript')).toBeInTheDocument()
+    expect(screen.queryByText('Generate Transcript')).not.toBeInTheDocument()
+    expect(screen.queryByText('Refresh Transcript')).not.toBeInTheDocument()
 
     mediaStoreState.transcriptStatus = new Map([['media-1', 'ready']])
     rerender(<ListMediaCard media={makeMedia()} />)
-    expect(screen.getByText('Refresh Transcript')).toBeInTheDocument()
+    expect(screen.queryByText('Refresh Transcript')).not.toBeInTheDocument()
     expect(screen.getByText('Delete Transcript')).toBeInTheDocument()
   })
 

@@ -1,0 +1,138 @@
+{% extends "webui/base.html" %}
+{% block title %}Review — {{ episode.project.name }}{% endblock %}
+{% block context %}{{ episode.project.name }} — {{ episode.title|default:episode.video_id }}{% endblock %}
+{% block content %}
+<div class="flex" style="margin-bottom:.75rem">
+  <a href="{% url 'episode_mark' episode.pk %}" class="meta">&larr; Back to marking</a>
+  <span class="spacer" style="flex:1"></span>
+  <span class="meta">caption style preset: <span class="timecode">{{ episode.project.caption_font }} · {{ episode.project.caption_color }} · {{ episode.project.caption_position }}</span></span>
+</div>
+
+{% if msg %}<div class="msg-success">{{ msg }}</div>{% endif %}
+
+<div class="flex" style="margin-bottom:.75rem">
+  <h1>Clip {{ current.index }} of {{ total }}</h1>
+  <span class="spacer" style="flex:1"></span>
+  {% if current_idx > 1 %}<a class="btn sm" href="{% url 'episode_review' episode.pk %}?idx={{ current_idx|add:-1 }}">◂ prev</a>{% endif %}
+  {% if current_idx < total %}<a class="btn sm" href="{% url 'episode_review' episode.pk %}?idx={{ current_idx|add:1 }}">next ▸</a>{% endif %}
+</div>
+
+<div class="grid-2" style="grid-template-columns:360px 1fr;align-items:start">
+  <div class="panel" style="overflow:hidden">
+    <div style="background:#000;aspect-ratio:9/16;display:flex;align-items:center;justify-content:center">
+      {% if current.short_url %}
+      <video id="preview" src="{{ current.short_url }}" style="height:100%;max-width:100%" controls loop></video>
+      {% else %}
+      <div class="muted">Not rendered yet — hit Render all on the marking screen.</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div style="display:flex;flex-direction:column;gap:.75rem">
+    <div class="panel">
+      <div class="panel-head">Caption text (auto-filled, editable)</div>
+      <div class="panel-body">
+        <textarea id="caption-text" rows="3" style="width:100%;resize:vertical">{{ current.clip.caption_override|default:"" }}</textarea>
+        <p class="meta mt-1">The rendered clip already has captions burned in with the client's style. Edit this text if a word needs correcting for the re-render.</p>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">Trim handles</div>
+      <div class="panel-body">
+        <div class="flex" style="gap:1rem">
+          <label class="field">In (s)
+            <input type="number" step="0.1" id="trim-in" value="{{ current.clip.start_time|floatformat:1 }}">
+          </label>
+          <label class="field">Out (s)
+            <input type="number" step="0.1" id="trim-out" value="{{ current.clip.end_time|floatformat:1 }}">
+          </label>
+        </div>
+        <button class="btn sm mt-1" onclick="applyTrim()">Trim &amp; re-render this clip</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">This clip</div>
+      <div class="panel-body">
+        <div class="timecode">{{ episode.project.slug }}_{{ episode.pk|stringformat:"04d" }}_clip{{ current_idx|stringformat:"02d" }}.mp4</div>
+        {% if current.size %}<div class="meta">{{ current.size|filesizeformat }}</div>{% endif %}
+        <div class="flex mt-1">
+          <form method="POST" action="{% url 'clip_confirm' episode.pk current.clip.pk %}" style="display:inline">
+            {% csrf_token %}
+            <input type="hidden" name="caption" id="caption-hidden">
+            <button class="btn green" type="submit">Looks good →</button>
+          </form>
+          <a class="btn ghost" href="{% url 'editor_shell' episode.video_id %}" target="_blank">Open full editor</a>
+        </div>
+      </div>
+    </div>
+
+    {% if total > 1 %}
+    <div class="panel">
+      <div class="panel-head">Batch</div>
+      <div class="panel-body flex">
+        {% for c in clips %}
+        <a href="{% url 'episode_review' episode.pk %}?idx={{ c.index }}"
+           style="padding:.15rem .5rem;border-radius:4px;border:1px solid var(--line-hairline)"
+           class="{% if c.clip.confirmed %}timecode{% endif %}">{{ c.index }}{% if c.clip.confirmed %} ✓{% endif %}</a>
+        {% endfor %}
+        {% if total > 1 %}
+        <span class="spacer" style="flex:1"></span>
+        <a class="btn sm green" href="{% url 'episode_deliver' episode.pk %}">Package &amp; deliver →</a>
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block hotkeys %}
+<div class="hotkeys">
+  <span><kbd>Space</kbd> play/pause</span>
+  <span><kbd>Enter</kbd> confirm</span>
+  <span><kbd>←</kbd> <kbd>→</kbd> prev / next</span>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const video = document.getElementById('preview');
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.key === ' ') { e.preventDefault(); if (video) video.paused ? video.play() : video.pause(); }
+  else if (e.key === 'Enter') { e.preventDefault(); submitConfirm(); }
+  else if (e.key === 'ArrowLeft') {
+    const prev = document.querySelector('a[href*="idx={{ current_idx|add:-1 }}"]');
+    if (prev) window.location.href = prev.href;
+  }
+  else if (e.key === 'ArrowRight') {
+    const next = document.querySelector('a[href*="idx={{ current_idx|add:1 }}"]');
+    if (next) window.location.href = next.href;
+  }
+});
+
+function submitConfirm() {
+  document.getElementById('caption-hidden').value = document.getElementById('caption-text').value;
+  document.querySelector('form[action*="confirm"]').submit();
+}
+
+function applyTrim() {
+  const start = parseFloat(document.getElementById('trim-in').value);
+  const end = parseFloat(document.getElementById('trim-out').value);
+  if (!isFinite(start) || !isFinite(end) || end <= start) return;
+  const body = new URLSearchParams({ start, end });
+  document.getElementById('trim-out').disabled = true;
+  fetch("{% url 'clip_trim' episode.pk current.clip.pk %}", {
+    method: 'POST', body,
+    headers: { 'X-CSRFToken': getCookie('csrftoken') }
+  }).then(() => location.reload());
+}
+
+function getCookie(name) {
+  const m = document.cookie.match(new RegExp('(^|; )' + name + '=([^;]*)'));
+  return m ? decodeURIComponent(m[2]) : null;
+}
+</script>
+{% endblock %}

@@ -1,0 +1,35 @@
+{% extends "webui/base.html" %}
+{% block title %}Deliver — {{ episode.project.name }}{% endblock %}
+{% block context %}{{ episode.project.name }} — {{ episode.title|default:episode.video_id }}{% endblock %}
+{% block content %}
+<div class="flex" style="margin-bottom:.75rem">
+  <a href="{% url 'episode_review' episode.pk %}" class="meta">&larr; Back to review</a>
+  <span class="spacer" style="flex:1"></span>
+  {% if episode.delivered %}<span class="tally-chip green">delivered</span>{% endif %}
+</div>
+
+{% if msg %}<div class="msg-success">{{ msg }}</div>{% endif %}
+
+<div class="panel mb-1">
+  <div class="panel-head">{{ episode.project.name }} — {{ episode.title|default:episode.video_id }} — {{ clips|length }} clips</div>
+  <div class="panel-body">
+    {% for c in clips %}
+    <div class="card-row" style="cursor:default">
+      <span class="tally-dot {% if c.clip.confirmed %}green{% else %}red{% endif %}"></span>
+      <span class="timecode" style="flex:1">{{ episode.project.slug }}_{{ episode.pk|stringformat:"04d" }}_clip{{ c.index|stringformat:"02d" }}.mp4</span>
+      {% if c.short_url %}<a class="btn sm" href="{{ c.short_url }}" target="_blank" onclick="event.stopPropagation()">view</a>{% endif %}
+      {% if not c.clip.confirmed %}<span class="tally-chip red">unconfirmed</span>{% endif %}
+    </div>
+    {% endfor %}
+    <p class="meta mt-1">Files are named and organized automatically at render time. One action packages them into a zip for the client.</p>
+    {% if episode.delivered and zip_exists %}
+    <a class="btn green mt-1" href="{% url 'serve_output' zip_rel %}" style="display:inline-flex">Download delivery zip</a>
+    {% else %}
+    <form method="POST" action="{% url 'episode_package' episode.pk %}" class="mt-1">
+      {% csrf_token %}
+      <button class="btn green" type="submit" {% if not clips %}disabled{% endif %}>Package &amp; mark delivered</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

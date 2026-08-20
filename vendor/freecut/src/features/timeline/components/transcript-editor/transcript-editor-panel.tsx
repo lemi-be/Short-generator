@@ -26,17 +26,9 @@ import {
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import {
-  TranscribeDialog,
-  type TranscribeDialogValues,
-} from '@/features/timeline/deps/transcribe-dialog'
 import { cn } from '@/shared/ui/cn'
 import { createLogger } from '@/shared/logging/logger'
 import { needsTranscriptWordSeparator } from '@/shared/utils/transcript-text'
-import {
-  isTranscriptionOutOfMemoryError,
-  TRANSCRIPTION_OOM_HINT,
-} from '@/shared/utils/transcription-cancellation'
 import { useSelectionStore } from '@/shared/state/selection'
 import { usePlaybackStore } from '@/shared/state/playback'
 import { useClipboardStore } from '@/shared/state/clipboard'
@@ -52,11 +44,7 @@ import {
 } from '../../stores/transcript-ignore-store'
 import { buildTranscriptClipboardItems } from '../../utils/transcript-clipboard'
 import { registerTranscriptCopyHandler } from '../../utils/transcript-copy-bridge'
-import {
-  cancelMediaTranscriptionJob,
-  mediaTranscriptionService,
-  runMediaTranscriptionJob,
-} from '../../deps/media-transcription-service'
+import { mediaTranscriptionService } from '../../deps/media-transcription-service'
 import {
   buildRemovalRangesByMediaId,
   buildTranscriptTokens,
@@ -280,7 +268,6 @@ export function TranscriptEditorPanel({ active }: TranscriptEditorPanelProps) {
   const [anchorIndex, setAnchorIndex] = useState(-1)
   const [focusIndex, setFocusIndex] = useState(-1)
   const [query, setQuery] = useState('')
-  const [transcribeDialogOpen, setTranscribeDialogOpen] = useState(false)
   // -1 means "no match shown yet", so the first Next/Enter lands on match 0.
   const [matchCursor, setMatchCursor] = useState(-1)
   // Bumped when a stored transcript changes externally (e.g. deleted from the media
@@ -712,62 +699,6 @@ export function TranscriptEditorPanel({ active }: TranscriptEditorPanelProps) {
     return status === 'loading' || status === 'transcribing'
   })
 
-  const handleTranscribe = useCallback((values: TranscribeDialogValues) => {
-    const targets = uniqueMediaIds.filter((id) => {
-      const status = mediaState[id]?.status
-      return status === 'needs' || status === 'error'
-    })
-    if (targets.length === 0) return
-
-    setTranscribeDialogOpen(false)
-
-    for (const id of targets) requestedRef.current.add(id)
-    setMediaState((prev) => {
-      const next = { ...prev }
-      for (const id of targets) next[id] = { status: 'transcribing' }
-      return next
-    })
-
-    void Promise.all(
-      targets.map(async (mediaId) => {
-        try {
-          const result = await runMediaTranscriptionJob(mediaId, {
-            ...values,
-            onModelFallback: () => {
-              toast.info(t('transcript.largeTurboFallback'))
-            },
-          })
-          if (!mountedRef.current) return
-          if (result.status === 'cancelled') {
-            setMediaState((prev) => ({ ...prev, [mediaId]: { status: 'needs' } }))
-            return
-          }
-          const { transcript } = result
-          setMediaState((prev) => ({
-            ...prev,
-            [mediaId]: hasWordTimings(transcript)
-              ? { status: 'ready', transcript }
-              : { status: 'needs' },
-          }))
-        } catch (error) {
-          logger.warn('Transcription failed', { mediaId, error })
-          const errorMessage = isTranscriptionOutOfMemoryError(error)
-            ? TRANSCRIPTION_OOM_HINT
-            : error instanceof Error && error.message.trim().length > 0
-              ? error.message
-              : t('transcript.toastTranscribeFailed')
-          if (mountedRef.current) {
-            setMediaState((prev) => ({
-              ...prev,
-              [mediaId]: { status: 'error', errorMessage },
-            }))
-          }
-          toast.error(errorMessage)
-        }
-      }),
-    )
-  }, [uniqueMediaIds, mediaState, t])
-
   const transcriptionError = useMemo(
     () =>
       needsTranscription
@@ -775,20 +706,6 @@ export function TranscriptEditorPanel({ active }: TranscriptEditorPanelProps) {
         .find((entry) => entry?.status === 'error')?.errorMessage,
     [mediaState, needsTranscription],
   )
-
-  const transcriptionFileName = useMemo(() => {
-    if (needsTranscription.length !== 1) {
-      return t('transcript.selectedClips', {
-        defaultValue: '{{count}} selected clips',
-        count: needsTranscription.length,
-      })
-    }
-    const mediaId = needsTranscription[0]
-    return (
-      transcriptableItems.find((item) => item.mediaId === mediaId)?.label ??
-      t('transcript.selectedClip', { defaultValue: 'Selected clip' })
-    )
-  }, [needsTranscription, transcriptableItems, t])
 
   const selectionCount = selectedKeys.size
 
@@ -917,15 +834,13 @@ export function TranscriptEditorPanel({ active }: TranscriptEditorPanelProps) {
                   {transcriptionError}
                 </p>
               )}
+              <p className="text-xs leading-5 text-muted-foreground/70">
+                {t('transcript.attachedByPipeline', {
+                  defaultValue:
+                    'Transcripts are attached to the clips automatically when the shorts are generated.',
+                })}
+              </p>
             </div>
-            <Button size="sm" onClick={() => setTranscribeDialogOpen(true)} disabled={isBusy}>
-              {isBusy && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
-              {isBusy
-                ? t('transcript.transcribing')
-                : transcriptionError
-                  ? t('transcript.tryAgain')
-                  : t('transcript.generate')}
-            </Button>
           </div>
         ) : tokens.length === 0 && isBusy ? (
           <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
@@ -1086,20 +1001,6 @@ export function TranscriptEditorPanel({ active }: TranscriptEditorPanelProps) {
           </Button>
         </div>
       </div>
-
-      <TranscribeDialog
-        open={transcribeDialogOpen}
-        onOpenChange={setTranscribeDialogOpen}
-        fileName={transcriptionFileName}
-        hasTranscript={false}
-        isRunning={isBusy}
-        progressPercent={null}
-        progressLabel={t('transcript.transcribing')}
-        onStart={handleTranscribe}
-        onCancel={() => {
-          for (const mediaId of uniqueMediaIds) cancelMediaTranscriptionJob(mediaId)
-        }}
-      />
     </div>
   )
 }

@@ -287,8 +287,9 @@ function resolveProxyGroupVisibility(props: MediaCardActionMenuProps) {
 }
 
 function resolveTranscriptGroupVisibility(props: MediaCardActionMenuProps) {
-  const canShowGenerateTranscript =
-    props.isTranscribable && !props.isBroken && !props.isTranscribing
+  // In-browser transcription is disabled: transcripts are attached to clips by
+  // the shorts-generation pipeline, so there is nothing to generate here.
+  const canShowGenerateTranscript = false
   const canShowDeleteTranscript =
     props.isTranscribable && !props.isBroken && props.hasTranscript && !props.isTranscribing
   return {

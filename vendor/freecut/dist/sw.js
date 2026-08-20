@@ -1,9 +1,9 @@
-// assets-main-DZn--Xmr-js is replaced at build time (see serviceWorkerVersionPlugin in
+// assets-main-Cenkdr0s-js is replaced at build time (see serviceWorkerVersionPlugin in
 // vite.config.ts) with the hashed entry-chunk filename, so the cache name — and the SW
 // file bytes — change on every deploy. That lets registration.update() detect new
 // versions and lets `activate` purge the previous deploy's cached chunks. In dev the SW
 // is never registered (PROD-gated in main.tsx), so the unreplaced literal is harmless.
-const CACHE_VERSION = 'freecut-app-shell-assets-main-DZn--Xmr-js'
+const CACHE_VERSION = 'freecut-app-shell-assets-main-Cenkdr0s-js'
 // Served under /editor/ in the parent Django project. All shell URLs are
 // /editor/-rooted so cache.addAll() fetches same-scope resources (the site
 // root "/" is the Django home page, not the editor).

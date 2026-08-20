@@ -10,6 +10,7 @@
 
 import type { SubtitleSegmentItem, TextItem } from '@/types/timeline'
 import { parseSubtitleCueText } from '@/shared/utils/subtitle-cue-format'
+import { buildKaraokeSpans } from '@/shared/typography/caption-karaoke'
 import {
   layoutTextBlock,
   lineInkWidth,
@@ -494,7 +495,12 @@ export function renderSubtitleSegmentItem(
   const activeCue = findActiveSubtitleCue(item.cues, secondsIntoSegment)
   if (!activeCue) return
   const parsed = parseSubtitleCueText(activeCue.text)
-  if (parsed.isEmpty) return
+  const karaoke = buildKaraokeSpans(
+    activeCue,
+    Math.max(0, secondsIntoSegment - activeCue.startSeconds),
+    item,
+  )
+  if (!karaoke && parsed.isEmpty) return
 
   const ephemeralText: TextItem = {
     id: item.id,
@@ -504,8 +510,9 @@ export function renderSubtitleSegmentItem(
     durationInFrames: item.durationInFrames,
     label: item.label,
     mediaId: item.mediaId,
-    text: parsed.plainText,
-    textSpans: parsed.spans,
+    text: karaoke?.text ?? parsed.plainText,
+    textSpans: karaoke?.spans ?? parsed.spans,
+    spanLayout: karaoke?.spanLayout,
     fontSize: item.fontSize,
     fontFamily: item.fontFamily,
     fontWeight: item.fontWeight,

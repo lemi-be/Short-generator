@@ -10,6 +10,7 @@ import type { MediaCaption } from '@/infrastructure/analysis/media-tagger'
 import type { SubtitleCue, SubtitleFormat } from '@/shared/utils/subtitles'
 import type {
   AudioItem,
+  CaptionKaraokeStyle,
   GeneratedCaptionSource,
   SubtitleSegmentItem,
   TextItem,
@@ -91,7 +92,11 @@ export type CaptionTextItemTemplate = Pick<
   | 'textShadow'
   | 'stroke'
   | 'transform'
->
+> & {
+  /** Karaoke highlight mode carried onto synthesized subtitle segments. */
+  karaokeStyle?: CaptionKaraokeStyle
+  karaokeColor?: string
+}
 
 export const VIRTUAL_TRANSCRIPT_CAPTION_TRACK_ID = '__virtual-transcript-captions__'
 
@@ -876,17 +881,30 @@ export function buildSubtitleSegmentForClip(
 
     // Convert source seconds → timeline seconds relative to clip.from / speed,
     // then keep cue times relative to the segment's eventual `from`.
+    const trimOffset = overlapStartSec - cue.startSeconds
     const cueStartTimeline = (overlapStartSec - sourceStartSeconds) / speed
     const cueEndTimeline = (overlapEndSec - sourceStartSeconds) / speed
     const cueStartFrames = Math.floor(cueStartTimeline * timelineFps)
     const cueEndFrames = Math.ceil(cueEndTimeline * timelineFps)
     if (cueEndFrames <= cueStartFrames) continue
 
+    // Word timings stay relative to the SEGMENT cue's start. When the clip
+    // cuts into the middle of a source cue, words before the cut are clamped
+    // to 0 (they're gone from the visible window anyway).
+    const words = cue.words
+      ?.filter((word) => word.end > word.start)
+      .map((word) => ({
+        text: word.text,
+        start: Math.max(0, cueStartTimeline + (word.start - trimOffset) / speed),
+        end: Math.max(0, cueStartTimeline + (word.end - trimOffset) / speed),
+      }))
+
     overlappingCues.push({
       id: cue.id,
       startSeconds: cueStartTimeline,
       endSeconds: cueEndTimeline,
       text: cue.text,
+      words,
     })
     if (cueStartFrames < firstFromOffset) firstFromOffset = cueStartFrames
     if (cueEndFrames > lastEndOffset) lastEndOffset = cueEndFrames
@@ -908,6 +926,13 @@ export function buildSubtitleSegmentForClip(
     startSeconds: cue.startSeconds - segmentFromOffset / timelineFps,
     endSeconds: cue.endSeconds - segmentFromOffset / timelineFps,
     text: cue.text,
+    // Shift word timings by the same segment offset so they stay relative to
+    // the cue's stored start.
+    words: cue.words?.map((word) => ({
+      text: word.text,
+      start: Math.max(0, word.start - segmentFromOffset / timelineFps),
+      end: Math.max(0, word.end - segmentFromOffset / timelineFps),
+    })),
   }))
 
   const defaultStyle = {

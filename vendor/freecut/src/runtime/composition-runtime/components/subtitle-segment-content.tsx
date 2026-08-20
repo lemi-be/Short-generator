@@ -2,6 +2,7 @@ import React, { useMemo } from 'react'
 
 import { useSequenceContext } from '@/runtime/composition-runtime/deps/player'
 import { parseSubtitleCueText } from '@/shared/utils/subtitle-cue-format'
+import { buildKaraokeSpans } from '@/shared/typography/caption-karaoke'
 import type { SubtitleSegmentItem, TextItem } from '@/types/timeline'
 
 import { useVideoConfig } from '../hooks/use-player-compat'
@@ -36,6 +37,20 @@ export const SubtitleSegmentContent: React.FC<{
     [activeCue],
   )
 
+  // Karaoke highlight: when enabled, recolor the currently-spoken word with
+  // the accent color instead of rendering the static phrase.
+  const karaoke = useMemo(
+    () =>
+      activeCue
+        ? buildKaraokeSpans(
+            activeCue,
+            Math.max(0, secondsIntoSegment - activeCue.startSeconds),
+            item,
+          )
+        : null,
+    [activeCue, item, secondsIntoSegment],
+  )
+
   // Synthesize an ephemeral TextItem that carries the active cue's text and
   // the segment's typography. Keyframe/gizmo lookups by id will miss (the
   // segment isn't a TextItem) — that's fine for now; segment-level keyframes
@@ -50,11 +65,12 @@ export const SubtitleSegmentContent: React.FC<{
       label: item.label,
       mediaId: item.mediaId,
       transform: item.transform,
-      text: parsed?.plainText ?? '',
+      text: karaoke?.text ?? parsed?.plainText ?? '',
       // textSpans drives styled per-run rendering — italic / bold / colored
-      // fragments inside one cue. TextContent prefers spans over `text`
-      // when both are present.
-      textSpans: parsed?.spans,
+      // fragments inside one cue (or karaoke's per-word highlight). TextContent
+      // prefers spans over `text` when both are present.
+      textSpans: karaoke?.spans ?? parsed?.spans,
+      spanLayout: karaoke?.spanLayout,
       fontSize: item.fontSize,
       fontFamily: item.fontFamily,
       fontWeight: item.fontWeight,
@@ -72,10 +88,11 @@ export const SubtitleSegmentContent: React.FC<{
       stroke: item.stroke,
       _sequenceFrameOffset: item._sequenceFrameOffset,
     }),
-    [parsed, item],
+    [item, karaoke, parsed],
   )
 
-  if (!activeCue || !parsed || parsed.isEmpty) return null
+  if (!activeCue) return null
+  if (!karaoke && (!parsed || parsed.isEmpty)) return null
   return <TextContent item={syntheticTextItem} />
 }
 

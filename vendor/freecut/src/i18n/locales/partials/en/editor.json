@@ -602,7 +602,10 @@
       "background": "Background",
       "on": "On",
       "off": "Off",
-      "padding": "Padding"
+      "padding": "Padding",
+      "highlight": "Highlight",
+      "highlightHint": "Karaoke style: the word currently being spoken is recolored inside the phrase.",
+      "highlightColor": "Highlight color"
     },
     "captionPresets": {
       "netflixHint": "Inter on a rounded dark box, lower-third — broadcast-grade neutral.",
