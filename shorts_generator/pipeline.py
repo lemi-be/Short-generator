@@ -119,7 +119,7 @@ def _run_api(
 def generate_shorts(
     youtube_url: str,
     num_clips: int = 10,
-    download_format: str = "720",
+    download_format: str = "1080",
     language: Optional[str] = None,
     mode: str = "local",
     min_clip_seconds: int = 30,

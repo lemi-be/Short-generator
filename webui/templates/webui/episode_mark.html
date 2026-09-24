@@ -10,15 +10,28 @@
 
 {% if msg %}<div class="msg-success">{{ msg }}</div>{% endif %}
 
-<div id="render-banner" style="display:none" class="msg-error">
-  Rendering batch: <span id="render-progress">0%</span> — <span id="render-message"></span>
+<div id="render-banner" style="display:none;margin-bottom:0.9rem;background:var(--bg-panel-raised);border:1px solid var(--tally-amber);padding:.6rem .85rem;border-radius:6px">
+  <div class="flex" style="align-items:center;justify-content:space-between">
+    <div style="display:flex;align-items:center;gap:.6rem">
+      <span class="tally-dot amber" id="render-dot"></span>
+      <span><strong style="color:var(--tally-amber)">Rendering batch:</strong> <span id="render-progress" class="timecode" style="color:var(--text-primary);font-weight:600">0%</span> — <span id="render-message" class="meta">starting...</span></span>
+    </div>
+    <button type="button" class="btn sm red" id="btn-cancel-render" onclick="cancelRender()" style="padding:0.25rem 0.65rem;font-size:12px;cursor:pointer">■ Cancel Render</button>
+  </div>
 </div>
 
 <div class="grid-2" style="grid-template-columns:1fr 340px">
   <div class="panel" style="display:flex;flex-direction:column;min-height:calc(100vh - 190px)">
-    <div class="panel-head">
-      <span>Transcript</span>
-      <span class="spacer" style="flex:1"></span>
+    <div class="panel-head flex" style="align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.5rem">
+      <div style="display:flex;align-items:center;gap:.65rem">
+        <span>Transcript</span>
+        <div style="display:inline-flex;align-items:center;gap:.3rem;background:var(--bg-panel-raised);border:1px solid var(--line-hairline);padding:2px 8px;border-radius:6px">
+          <span style="font-size:.74rem;color:var(--text-muted);font-weight:600">Download:</span>
+          <a href="{% url 'download_transcript' episode.video_id %}?format=srt" class="btn sm ghost" download title="Download SubRip Subtitles (.srt)" style="padding:0.15rem 0.45rem;font-size:0.75rem;height:auto">.SRT</a>
+          <a href="{% url 'download_transcript' episode.video_id %}?format=txt" class="btn sm ghost" download title="Download Timestamped Text (.txt)" style="padding:0.15rem 0.45rem;font-size:0.75rem;height:auto">.TXT</a>
+          <a href="{% url 'download_transcript' episode.video_id %}?format=json" class="btn sm ghost" download title="Download Word Timestamps JSON (.json)" style="padding:0.15rem 0.45rem;font-size:0.75rem;height:auto">.JSON</a>
+        </div>
+      </div>
       <span class="meta">hover a line, then press <kbd style="font-family:monospace">I</kbd> / <kbd style="font-family:monospace">O</kbd></span>
     </div>
     <div class="scroll" id="transcript" style="height:calc(100vh - 240px);overflow-y:auto">
@@ -146,8 +159,18 @@ async function renderAll() {
 }
 
 function showBanner() {
-  document.getElementById('render-banner').style.display = 'block';
-  document.getElementById('render-btn').disabled = true;
+  const banner = document.getElementById('render-banner');
+  if (banner) banner.style.display = 'block';
+  const dot = document.getElementById('render-dot');
+  if (dot) dot.className = 'tally-dot amber';
+  const btnCancel = document.getElementById('btn-cancel-render');
+  if (btnCancel) {
+    btnCancel.style.display = 'inline-flex';
+    btnCancel.disabled = false;
+    btnCancel.textContent = '■ Cancel Render';
+  }
+  const renderBtn = document.getElementById('render-btn');
+  if (renderBtn) renderBtn.disabled = true;
 }
 
 async function pollRender() {
@@ -160,11 +183,56 @@ async function pollRender() {
   if (data.status === 'failed') {
     document.getElementById('render-progress').textContent = 'failed';
     document.getElementById('render-message').textContent = data.error || '';
+    const dot = document.getElementById('render-dot');
+    if (dot) dot.className = 'tally-dot red';
+    const btnCancel = document.getElementById('btn-cancel-render');
+    if (btnCancel) btnCancel.style.display = 'none';
+    const renderBtn = document.getElementById('render-btn');
+    if (renderBtn) renderBtn.disabled = false;
+    return;
+  }
+  if (data.status === 'cancelled') {
+    document.getElementById('render-progress').textContent = 'cancelled';
+    document.getElementById('render-message').textContent = 'Render stopped.';
+    const dot = document.getElementById('render-dot');
+    if (dot) dot.className = 'tally-dot red';
+    const btnCancel = document.getElementById('btn-cancel-render');
+    if (btnCancel) btnCancel.style.display = 'none';
+    const renderBtn = document.getElementById('render-btn');
+    if (renderBtn) renderBtn.disabled = false;
+    setTimeout(() => {
+      document.getElementById('render-banner').style.display = 'none';
+      location.reload();
+    }, 1200);
     return;
   }
   document.getElementById('render-progress').textContent = data.progress + '%';
   document.getElementById('render-message').textContent = data.message || '';
   setTimeout(pollRender, 1500);
+}
+
+async function cancelRender() {
+  const btn = document.getElementById('btn-cancel-render');
+  if (btn) {
+    btn.disabled = true;
+    btn.innerText = "Stopping...";
+  }
+  try {
+    const res = await fetch("{% url 'render_cancel' episode.pk %}", {
+      method: 'POST',
+      headers: { 'X-CSRFToken': getCookie('csrftoken') }
+    });
+    const data = await res.json();
+    if (data.ok) {
+      document.getElementById('render-progress').textContent = 'cancelled';
+      document.getElementById('render-message').textContent = 'Render stopped.';
+      const dot = document.getElementById('render-dot');
+      if (dot) dot.className = 'tally-dot red';
+      setTimeout(() => location.reload(), 900);
+    }
+  } catch (err) {
+    console.error("Cancel failed:", err);
+  }
 }
 
 function getCookie(name) {

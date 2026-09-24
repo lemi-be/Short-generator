@@ -29,7 +29,7 @@ def main() -> int:
         help="local (default, yt-dlp + faster-whisper + LLM provider + ffmpeg) or api (MuAPI, kept for reference).",
     )
     parser.add_argument("--num-clips", type=int, default=10, help="How many shorts to render (default: 10)")
-    parser.add_argument("--format", default="720", help="Source download resolution: 360 / 480 / 720 / 1080 (default: 720)")
+    parser.add_argument("--format", default="1080", help="Source download resolution: 360 / 480 / 720 / 1080 / best (default: 1080)")
     parser.add_argument("--language", default=None, help="Force Whisper language code, e.g. 'en' (default: auto-detect)")
     parser.add_argument("--max-clip-seconds", type=int, default=60, help="Hard cap on rendered clip length in seconds (default: 60, max 60). Clips longer than this from the LLM are truncated to start_time + N.")
     parser.add_argument("--min-clip-seconds", type=int, default=30, help="Minimum clip length in seconds (default: 30). Clips shorter than this are dropped — short-form feeds don't retain sub-30s clips.")

@@ -14,8 +14,17 @@ class ClientProject(models.Model):
     """One paying client. Caption style + branding live here, set once,
     and are inherited by every episode and clip automatically."""
 
+    CAPTION_TEMPLATE_CHOICES = [
+        ("hormozi_pop", "Hormozi Viral Pop (Impact, 1.22x Word Pop, Emojis)"),
+        ("beast_neon", "MrBeast Dynamic (Heavy Sans, Neon Cyan, Bold Stroke)"),
+        ("minimal_clean", "Clean Minimalist / Ali Abdaal (Inter Sans, Soft Coral)"),
+        ("documentary", "Vox / Documentary (Georgia Serif, Editorial Red)"),
+        ("cyber_terminal", "Cyber Tech (JetBrains Mono, Terminal Green)"),
+    ]
     CAPTION_FONT_CHOICES = [
-        ("inter", "Inter (modern)"),
+        ("impact", "Impact (bold viral / Hormozi)"),
+        ("heavy", "Arial Black (clean heavy)"),
+        ("inter", "Inter (modern sans)"),
         ("serif", "Georgia (warm serif)"),
         ("mono", "JetBrains Mono (typewriter)"),
     ]
@@ -24,19 +33,33 @@ class ClientProject(models.Model):
         ("center", "Center"),
         ("top", "Top"),
     ]
+    VIDEO_FILTER_CHOICES = [
+        ("vivid_pop", "Vivid Pop (Speaker Focus: Contrast, Vibrance, Sharpness)"),
+        ("warm_studio", "Warm Studio (Golden Tone, Soft Glow)"),
+        ("clean_crisp", "Clean Crisp (High Clarity, Natural Tone)"),
+        ("cinematic", "Cinematic Punch (Filmic Shadows, Moody Vignette)"),
+        ("none", "None (Original Raw Video)"),
+    ]
 
     name = models.CharField(max_length=200, unique=True)
     slug = models.SlugField(max_length=120, unique=True, blank=True)
 
-    caption_font = models.CharField(max_length=50, choices=CAPTION_FONT_CHOICES, default="inter")
-    caption_color = models.CharField(max_length=9, default="#FFFFFF")
+    caption_template = models.CharField(max_length=50, choices=CAPTION_TEMPLATE_CHOICES, default="hormozi_pop")
+    caption_font = models.CharField(max_length=50, choices=CAPTION_FONT_CHOICES, default="impact")
+    caption_color = models.CharField(max_length=9, default="#FFEA00", help_text="Active word highlight color")
     caption_position = models.CharField(max_length=20, choices=CAPTION_POSITION_CHOICES, default="lower_third")
+
+    video_filter = models.CharField(max_length=50, choices=VIDEO_FILTER_CHOICES, default="vivid_pop")
 
     # Branding files live under output/branding/<slug>/ (served via /output/).
     brand_logo = models.CharField(max_length=500, blank=True)
     brand_lower_third = models.CharField(max_length=200, blank=True)
 
-    default_template = models.CharField(max_length=50, default="stage_solo_speaker")
+    default_template = models.CharField(max_length=50, default="full_bleed_solo")
+    zoom_punch = models.BooleanField(default=True)
+    master_audio = models.BooleanField(default=True)
+    hook_card = models.BooleanField(default=True)
+    podcast_solo_switch = models.BooleanField(default=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -101,12 +124,14 @@ class RenderJob(models.Model):
     STATUS_RENDERING = "rendering"
     STATUS_DONE = "done"
     STATUS_FAILED = "failed"
+    STATUS_CANCELLED = "cancelled"
 
     STATUS_CHOICES = [
         (STATUS_QUEUED, "Queued"),
         (STATUS_RENDERING, "Rendering"),
         (STATUS_DONE, "Done"),
         (STATUS_FAILED, "Failed"),
+        (STATUS_CANCELLED, "Cancelled"),
     ]
 
     episode = models.ForeignKey(Episode, on_delete=models.CASCADE, related_name="render_jobs")

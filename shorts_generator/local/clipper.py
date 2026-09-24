@@ -23,6 +23,7 @@ because it is being used by another process`.
 import gc
 import math
 import os
+import re
 import subprocess
 import sys
 import time
@@ -61,20 +62,21 @@ CAPTION_Y = 1330                        # centered caption baseline in px
 CAPTION_BAND_TOP = 1180
 CAPTION_BAND_BOTTOM = 1500
 MAX_CAPTION_W = int(CANVAS_W * 0.8)     # 864px  — captions never exceed 80% width
-MAX_CAPTION_WORDS = 5                   # words shown per caption batch (fixed block)
-CAPTION_FONT_SCALE = 2.0                # large bold word-by-word caption font
+MAX_CAPTION_WORDS = 3                   # words shown per caption burst (fast-paced kinetic standard)
+CAPTION_FONT_SCALE = 2.2                # large bold word-by-word caption font
 CAPTION_FONT_THICK = 4                  # bold stroke for captions
-CAPTION_ACCENT = (77, 145, 255)         # #ff914d in BGR — current word highlight
+CAPTION_ACCENT = (0, 234, 255)          # #FFEA00 Electric Yellow in BGR — active word highlight
 
 
 # ── Caption style support (Pillow TTF rendering) ──────────────────────
-# Client presets are applied here: font token, color hex, position.
-# OpenCV's built-in Hershey fonts can't render real brand fonts, so when
-# Pillow is available the caption block is rasterized as an RGBA sprite and
-# alpha-composited onto the frame. Falls back to the OpenCV renderer without.
+# High-impact display typography (Hormozi / Submagic kinetic standard).
+# Outer outline (stroke) + drop shadow + neon word highlight ensures 100%
+# legibility on any footage without requiring an ugly gray bounding box.
 
 _FONT_TOKEN_FILES = {
-    "inter": ["segoeuib.ttf", "segoeui.ttf", "arialbd.ttf", "arial.ttf"],
+    "impact": ["impact.ttf", "ariblk.ttf", "seguibl.ttf", "segoeuib.ttf"],
+    "heavy": ["ariblk.ttf", "seguibl.ttf", "impact.ttf", "arialbd.ttf"],
+    "inter": ["segoeuib.ttf", "seguibl.ttf", "arialbd.ttf", "arial.ttf"],
     "serif": ["georgiab.ttf", "georgia.ttf", "timesbd.ttf", "times.ttf"],
     "mono": ["consolab.ttf", "consola.ttf", "courbd.ttf", "cour.ttf"],
 }
@@ -82,12 +84,25 @@ _WINDOWS_FONT_DIR = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
 
 _font_cache: Dict[Tuple[str, int], Any] = {}
 
+# Contextual high-impact emojis mapped to spoken keywords
+EMOJI_KEYWORDS: Dict[str, str] = {
+    "money": "💰", "cash": "💵", "dollar": "💵", "dollars": "💵", "rich": "🤑", "wealth": "💰",
+    "secret": "🤫", "truth": "🤫", "nobody": "🤫", "quiet": "🤫",
+    "fire": "🔥", "crazy": "🔥", "insane": "🔥", "epic": "🔥", "hot": "🔥",
+    "mistake": "❌", "wrong": "❌", "never": "🚫", "stop": "🛑", "no": "🚫", "fail": "❌",
+    "win": "🏆", "winning": "🏆", "success": "🏆", "first": "🥇", "best": "⭐", "top": "🔝",
+    "growth": "📈", "grow": "📈", "scale": "🚀", "startup": "🚀", "rocket": "🚀", "fast": "⚡",
+    "mind": "🧠", "brain": "🧠", "think": "💡", "idea": "💡", "learn": "📚",
+    "heart": "❤️", "love": "❤️", "shock": "⚡", "power": "⚡", "boom": "💥",
+    "danger": "⚠️", "warning": "⚠️", "kill": "💀", "dead": "💀", "death": "💀",
+}
+
 
 def _resolve_font(token: str, size: int):
-    key = (token or "inter", size)
+    key = (token or "impact", size)
     if key in _font_cache:
         return _font_cache[key]
-    for name in _FONT_TOKEN_FILES.get(token or "inter", _FONT_TOKEN_FILES["inter"]):
+    for name in _FONT_TOKEN_FILES.get(token or "impact", _FONT_TOKEN_FILES["impact"]):
         cand = _WINDOWS_FONT_DIR / name
         if cand.exists():
             try:
@@ -99,6 +114,21 @@ def _resolve_font(token: str, size: int):
     font = ImageFont.load_default(size)
     _font_cache[key] = font
     return font
+
+
+def _resolve_emoji_font(size: int = 76):
+    key = ("emoji", size)
+    if key in _font_cache:
+        return _font_cache[key]
+    cand = _WINDOWS_FONT_DIR / "seguiemj.ttf"
+    if cand.exists():
+        try:
+            font = ImageFont.truetype(str(cand), size)
+            _font_cache[key] = font
+            return font
+        except Exception:
+            pass
+    return None
 
 
 def _composite_rgba(canvas: "np.ndarray", rgba: "np.ndarray", x0: int, y0: int) -> "np.ndarray":
@@ -123,63 +153,249 @@ def _parse_hex(color: Optional[str]) -> Tuple[int, int, int]:
         return 255, 255, 255
 
 
+SUBTITLE_TEMPLATES: Dict[str, Dict[str, Any]] = {
+    "hormozi_pop": {
+        "label": "Hormozi Viral Pop (Impact, 1.22x Word Pop, Emojis)",
+        "font": "impact",
+        "default_color": "#FFEA00",  # Electric Yellow highlight
+        "pop_scale": 1.22,           # Active word expands by 22%
+        "stroke_width": 10,
+        "shadow_offset": (4, 6),
+        "uppercase": True,
+        "emojis": True,
+        "boxed": False,
+    },
+    "beast_neon": {
+        "label": "MrBeast Dynamic (Heavy Sans, Neon Cyan, Bold Stroke)",
+        "font": "heavy",
+        "default_color": "#00F0FF",  # Neon Cyan highlight
+        "pop_scale": 1.14,           # Active word expands by 14%
+        "stroke_width": 12,
+        "shadow_offset": (5, 8),
+        "uppercase": True,
+        "emojis": True,
+        "boxed": False,
+    },
+    "minimal_clean": {
+        "label": "Clean Minimalist / Ali Abdaal (Inter Sans, Soft Coral)",
+        "font": "inter",
+        "default_color": "#F4A261",  # Warm Coral highlight
+        "pop_scale": 1.05,
+        "stroke_width": 5,
+        "shadow_offset": (3, 4),
+        "uppercase": False,
+        "emojis": False,
+        "boxed": False,
+    },
+    "documentary": {
+        "label": "Vox / Documentary (Georgia Serif, Editorial Red)",
+        "font": "serif",
+        "default_color": "#E63946",  # Editorial Crimson highlight
+        "pop_scale": 1.0,            # Flat, elegant reading cadence
+        "stroke_width": 6,
+        "shadow_offset": (3, 4),
+        "uppercase": False,
+        "emojis": False,
+        "boxed": False,
+    },
+    "cyber_terminal": {
+        "label": "Cyber Tech (JetBrains Mono, Terminal Green)",
+        "font": "mono",
+        "default_color": "#00FF66",  # Matrix / Cyber Green highlight
+        "pop_scale": 1.15,
+        "stroke_width": 8,
+        "shadow_offset": (4, 4),
+        "uppercase": True,
+        "emojis": False,
+        "boxed": False,
+    },
+}
+
+
 def _word_block_rgba(
     window: List[str],
     batch_start: int,
     current_idx: int,
     style: Optional[Dict],
 ) -> "np.ndarray":
-    """Rasterize a caption block (max 5 words) as an RGBA sprite.
+    """Rasterize a modern kinetic caption block (1-3 words) with stroke & shadow.
 
-    All words are drawn in the client's caption color; the word currently
-    being spoken sits on a rounded accent chip so the sync is readable even
-    on mute. The whole block is one sprite pasted per frame.
+    Supports company-specific subtitle templates with:
+    - White base color for inactive words.
+    - Custom/template accent color for the active word being said.
+    - Hormozi font size pop effect (active word physically expands by ~22% on baseline).
+    - Optional contextual emojis.
     """
-    base_rgb = _parse_hex((style or {}).get("color"))
-    accent_rgb = (255, 145, 77)
-    font = _resolve_font((style or {}).get("font"), 92)
+    tmpl_id = (style or {}).get("caption_template") or "hormozi_pop"
+    tmpl = SUBTITLE_TEMPLATES.get(tmpl_id, SUBTITLE_TEMPLATES["hormozi_pop"])
+
+    # Base color for inactive words is always crisp high-contrast White
+    base_rgb = (255, 255, 255)
+
+    # Active word highlight color: user-configured color from project settings
+    # or the template default accent
+    custom_color = (style or {}).get("color")
+    if custom_color and custom_color.strip().upper() not in ("#FFFFFF", "#FFF", "WHITE"):
+        accent_rgb = _parse_hex(custom_color)
+    else:
+        accent_rgb = _parse_hex(tmpl.get("default_color", "#FFEA00"))
+
+    font_token = (style or {}).get("font") or tmpl.get("font", "impact")
+    base_size = 90
+    pop_scale = float(tmpl.get("pop_scale", 1.20))
+    pop_size = int(base_size * pop_scale) if pop_scale > 1.0 else base_size
+    font_base = _resolve_font(font_token, base_size)
+    font_pop = _resolve_font(font_token, pop_size)
+
+    def _font_metrics(f):
+        try:
+            return f.getmetrics()
+        except Exception:
+            return int(f.size * 0.8), int(f.size * 0.2)
+
+    # Safe width constraint: captions must never exceed 80% of canvas width (864px),
+    # guaranteeing at least 108px safe margins on both left and right edges.
+    SAFE_CAPTION_W = int(CANVAS_W * 0.80)  # 864px
+    pad_x = 36
+    pad_y = 26
+    avail_w = SAFE_CAPTION_W - 2 * pad_x
 
     probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
-    space_w = probe.textlength(" ", font=font)
 
-    # Wrap words onto up to two lines that fit MAX_CAPTION_W.
-    lines: List[List[str]] = [[]]
-    line_w = 0.0
-    for w in window:
-        ww = probe.textlength(w, font=font)
-        if lines[-1] and line_w + ww > MAX_CAPTION_W:
-            lines.append([])
-            line_w = 0.0
-        lines[-1].append(w)
-        line_w += ww + space_w
+    # Casing
+    if tmpl.get("uppercase", True):
+        disp_words = [w.upper() for w in window]
+    else:
+        disp_words = window
 
-    line_h = int(font.size * 1.25)
-    block_w = int(max(sum(probe.textlength(w + " ", font=font) for w in ln) for ln in lines)) if lines else 1
-    block_h = len(lines) * line_h
+    # Check for contextual emoji on active word
+    active_emoji = None
+    if tmpl.get("emojis", True):
+        for idx_w, w in enumerate(window):
+            abs_i = batch_start + idx_w
+            clean_w = re.sub(r"[^a-zA-Z]", "", w).lower()
+            if abs_i == current_idx and clean_w in EMOJI_KEYWORDS:
+                active_emoji = EMOJI_KEYWORDS[clean_w]
+                break
 
-    img = Image.new("RGBA", (block_w + 60, block_h + 30), (0, 0, 0, 0))
+    # Auto-fit shrink loop: dynamically downscale font if words are long so captions NEVER clip
+    space_w = probe.textlength(" ", font=font_base) + 10
+    while base_size > 36:
+        word_widths: List[float] = []
+        word_fonts: List[Any] = []
+        for idx_w, w in enumerate(disp_words):
+            abs_i = batch_start + idx_w
+            is_active = (abs_i == current_idx)
+            w_font = font_pop if is_active else font_base
+            word_fonts.append(w_font)
+            word_widths.append(probe.textlength(w, font=w_font))
+
+        emoji_font = _resolve_emoji_font(int(pop_size * 0.80)) if (active_emoji and tmpl.get("emojis", True)) else None
+        emoji_w = (probe.textlength(active_emoji, font=emoji_font) + 16) if (active_emoji and emoji_font) else 0
+        total_text_w = sum(word_widths) + max(0, len(disp_words) - 1) * space_w
+        total_w = int(total_text_w + emoji_w)
+
+        if total_w <= avail_w:
+            break
+
+        fit_scale = min(0.94, avail_w / max(1, total_w))
+        base_size = max(36, int(base_size * fit_scale))
+        pop_size = int(base_size * pop_scale) if pop_scale > 1.0 else base_size
+        font_base = _resolve_font(font_token, base_size)
+        font_pop = _resolve_font(font_token, pop_size)
+        space_w = probe.textlength(" ", font=font_base) + 8
+
+    ascent_base, descent_base = _font_metrics(font_base)
+    ascent_pop, descent_pop = _font_metrics(font_pop)
+    max_ascent = max(ascent_base, ascent_pop)
+    max_descent = max(descent_base, descent_pop)
+    line_h = max_ascent + max_descent
+
+    block_w = min(total_w + 2 * pad_x, SAFE_CAPTION_W)
+    block_h = line_h + 2 * pad_y
+
+    img = Image.new("RGBA", (block_w, block_h), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    d.rounded_rectangle([0, 0, block_w + 59, block_h + 29], radius=14, fill=(0, 0, 0, 175))
 
-    y = 15
-    idx = 0
-    for line in lines:
-        x = 30
-        for w in line:
-            abs_idx = batch_start + idx
-            if abs_idx == current_idx:
-                ww = d.textlength(w, font=font)
-                d.rounded_rectangle([x - 8, y - 6, x + ww + 8, y + line_h - 8], radius=10, fill=accent_rgb + (235,))
-                d.text((x, y), w, font=font, fill=(20, 20, 20, 255))
-            else:
-                d.text((x, y), w, font=font, fill=base_rgb + (255,))
-            x += d.textlength(w, font=font) + space_w
-            idx += 1
-        y += line_h
+    if (style or {}).get("boxed", tmpl.get("boxed", False)):
+        d.rounded_rectangle([10, 10, block_w - 10, block_h - 10], radius=16, fill=(0, 0, 0, 160))
+
+    baseline_y = pad_y + max_ascent
+    cur_x = pad_x
+    stroke_w = tmpl.get("stroke_width", 10)
+    shadow_dx, shadow_dy = tmpl.get("shadow_offset", (4, 6))
+
+    for idx_w, w in enumerate(disp_words):
+        abs_i = batch_start + idx_w
+        is_active = (abs_i == current_idx)
+        w_font = word_fonts[idx_w]
+        w_ascent, _ = _font_metrics(w_font)
+        word_y = baseline_y - w_ascent
+
+        text_color = accent_rgb if is_active else base_rgb
+        cur_stroke = stroke_w + (2 if is_active else 0)
+
+        # 1. Drop shadow pass
+        d.text(
+            (cur_x + shadow_dx, word_y + shadow_dy),
+            w,
+            font=w_font,
+            fill=(0, 0, 0, 160),
+            stroke_width=cur_stroke,
+            stroke_fill=(0, 0, 0, 160),
+        )
+
+        # 2. Main text with crisp black outline
+        d.text(
+            (cur_x, word_y),
+            w,
+            font=w_font,
+            fill=text_color + (255,),
+            stroke_width=cur_stroke,
+            stroke_fill=(0, 0, 0, 255),
+        )
+
+        cur_x += int(word_widths[idx_w] + space_w)
+
+    # Draw emoji if present
+    if active_emoji and emoji_font:
+        emoji_ascent, _ = _font_metrics(emoji_font)
+        emoji_x = cur_x - int(space_w) + 12
+        emoji_y = baseline_y - emoji_ascent - 4
+        try:
+            d.text((emoji_x, emoji_y), active_emoji, font=emoji_font, embedded_color=True)
+        except Exception:
+            d.text((emoji_x, emoji_y), active_emoji, font=emoji_font, fill=(255, 255, 255, 255))
+
     return np.array(img)
 
 
-def _band_for_position(position: Optional[str], layout_type: str) -> Tuple[int, int]:
+def _band_for_position(
+    position: Optional[str],
+    layout_type: str,
+    is_solo: bool = False,
+) -> Tuple[int, int]:
+    """Calculate the vertical safe band (y0, y1) for subtitles on a 1080x1920 canvas.
+
+    Podcast Split Screen rules:
+    - Dual split screen view (not is_solo): Subtitles sit right at the center seam
+      where the top and bottom clips meet (midpoint y = 960px, band 860..1060px).
+    - Dynamic solo full-screen cut (is_solo = True): Subtitles automatically move
+      to the bottom half (band 1400..1660px) to prevent covering the speaker's face.
+    """
+    if layout_type == "split_vertical":
+        if is_solo:
+            # Full vertical solo view: shift to bottom half so face & chin stay clear
+            if position == "top":
+                return 320, 620
+            return 1400, 1660
+
+        # Dual split view: right at the center meeting line (y = 960)
+        if position == "top":
+            return 320, 620
+        # By default (and for center/lower_third), center right on the meeting seam:
+        return 860, 1060
+
     if position == "top":
         return 320, 620
     if position == "center":
@@ -193,25 +409,45 @@ def _band_for_position(position: Optional[str], layout_type: str) -> Tuple[int, 
 # function reads at render time.
 
 TEMPLATE_SPECS: Dict[str, Dict[str, Any]] = {
+    "full_bleed_solo": {
+        "label": "Full Bleed (Solo Speaker)",
+        "category": "Talk & Conversation",
+        "layout": {"type": "full_bleed"},
+        "typography": {"position": "lower_third", "font_scale": 1.1},
+        "auto_framing": True,
+        "video_filter": "vivid_pop",
+    },
+    "blurred_backdrop": {
+        "label": "Blurred Backdrop (Context / Wide)",
+        "category": "Presentation & Wide",
+        "layout": {"type": "blurred_backdrop"},
+        "typography": {"position": "lower_third", "font_scale": 1.1},
+        "auto_framing": True,
+        "video_filter": "vivid_pop",
+    },
     "stage_solo_speaker": {
         "label": "Stage & Solo Speaker",
         "category": "Talk & Conversation",
         "layout": {"type": "single_focus"},
         "typography": {"position": "lower_third", "font_scale": 1.1},
         "auto_framing": True,
+        "video_filter": "vivid_pop",
     },
     "podcast_split_screen": {
         "label": "Podcast & Dialogue",
         "category": "Talk & Conversation",
         "layout": {"type": "split_vertical", "split_ratio": 0.5, "focus": "top"},
-        "typography": {"position": "center", "max_lines": 2},
+        "typography": {"position": "lower_third", "max_lines": 2},
         "auto_framing": True,
+        "solo_switch": True,
+        "bust_scale": 0.82,
+        "video_filter": "vivid_pop",
     },
 }
 
 TEMPLATE_LABELS: Dict[str, str] = {k: v["label"] for k, v in TEMPLATE_SPECS.items()}
 
-DEFAULT_TEMPLATE = "stage_solo_speaker"
+DEFAULT_TEMPLATE = "full_bleed_solo"
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -229,11 +465,12 @@ def _cut_subclip(source_path: str, start: float, end: float, out_path: str) -> s
     """Cut the source video to [start, end] with ffmpeg. Video only — the
     final mux reads audio from the original source via input seek, so
     re-encoding audio here would be wasted work."""
+    duration = max(0.1, end - start)
     cmd = [
         "ffmpeg", "-y", "-loglevel", "error",
-        "-i", source_path,
         "-ss", f"{start:.3f}",
-        "-to", f"{end:.3f}",
+        "-i", source_path,
+        "-t", f"{duration:.3f}",
         "-c:v", "libx264", "-preset", "fast", "-crf", "20",
         "-an",
         out_path,
@@ -249,8 +486,11 @@ def _mux_audio(
     start_time: Optional[float] = None,
     end_time: Optional[float] = None,
     in_path: Optional[str] = None,
+    master_audio: bool = True,
 ) -> None:
-    """Mux audio from the original source onto the silent reframed video."""
+    """Mux audio from the original source onto the silent reframed video,
+    applying broadcast vocal mastering and -14 LUFS loudness normalization.
+    """
     if source_path is not None and start_time is not None and end_time is not None:
         duration = end_time - start_time
         audio_args = [
@@ -261,6 +501,17 @@ def _mux_audio(
     else:
         audio_args = ["-i", in_path] if in_path else []
 
+    audio_filters: List[str] = []
+    if master_audio and audio_args:
+        # Agency-grade broadcast vocal chain:
+        # 1. 80Hz highpass: eliminates mic plosives, room rumble, and desk thumps
+        # 2. 3kHz presence EQ (+2dB, Q=1.0): boosts speech clarity on smartphone speakers
+        # 3. loudnorm: normalizes to -14 LUFS (Shorts/Reels target) with -1.5 dBTP true peak ceiling
+        audio_filters = [
+            "-af",
+            "highpass=f=80,equalizer=f=3000:t=q:w=1:g=2,loudnorm=I=-14:LRA=7:TP=-1.5",
+        ]
+
     cmd = [
         "ffmpeg", "-y", "-loglevel", "error",
         "-i", silent_path,
@@ -269,13 +520,15 @@ def _mux_audio(
         # browsers cannot decode — the video track silently disappears.
         "-c:v", "libx264", "-preset", "fast", "-crf", "20",
         "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "128k",
+        *audio_filters,
+        "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
         "-map", "0:v:0", "-map", "1:a:0?",
         "-shortest",
         "-movflags", "+faststart",
         out_path,
     ]
     subprocess.run(cmd, check=True, timeout=_FFMPEG_TIMEOUT, creationflags=_NO_WINDOW)
+
 
 
 def _opencv_temp(in_path: str) -> Tuple[str, str]:
@@ -323,7 +576,8 @@ def _get_frame_info(
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
     if progress is not None and total_frames > 0:
-        progress.set_total(total_frames)
+        if hasattr(progress, "set_total"):
+            progress.set_total(total_frames)
     return src_w, src_h, fps, total_frames
 
 
@@ -386,8 +640,19 @@ def _reframe_center(
         frame_idx += 1
         cropped = frame[y0:y0 + crop_h, x0:x0 + crop_w]
         writer.write(cropped)
-        if progress is not None and (frame_idx % 30 == 0 or total_frames == 0):
-            progress.update(frame_idx)
+        if progress is not None:
+            if getattr(progress, "is_cancelled", False) or (callable(getattr(progress, "check_cancelled", None)) and progress.check_cancelled()):
+                cap.release()
+                writer.release()
+                if os.path.exists(silent_path):
+                    try:
+                        os.remove(silent_path)
+                    except Exception:
+                        pass
+                _cleanup_temp(temp_path, orig_path)
+                raise InterruptedError("Render cancelled by user.")
+            if (frame_idx % 30 == 0 or total_frames == 0) and hasattr(progress, "update"):
+                progress.update(frame_idx)
 
     cap.release()
     writer.release()
@@ -488,9 +753,19 @@ def _reframe_facetrack(
         y0 = max(0, min(src_h - crop_h, cy - crop_h // 2))
         cropped = frame[y0:y0 + crop_h, x0:x0 + crop_w]
         writer.write(cropped)
-
-        if progress is not None and (frame_idx % 30 == 0 or total_frames == 0):
-            progress.update(frame_idx)
+        if progress is not None:
+            if getattr(progress, "is_cancelled", False) or (callable(getattr(progress, "check_cancelled", None)) and progress.check_cancelled()):
+                cap.release()
+                writer.release()
+                if os.path.exists(silent_path):
+                    try:
+                        os.remove(silent_path)
+                    except Exception:
+                        pass
+                _cleanup_temp(temp_path, orig_path)
+                raise InterruptedError("Render cancelled by user.")
+            if (frame_idx % 30 == 0 or total_frames == 0) and hasattr(progress, "update"):
+                progress.update(frame_idx)
 
     cap.release()
     writer.release()
@@ -602,30 +877,60 @@ def _render_letterbox(
     return canvas
 
 
-def _pre_scan_trajectory(
+def _detect_all_faces(
+    gray: "np.ndarray",
+    src_w: int,
+    src_h: int,
+    face_cascade: "cv2.CascadeClassifier",
+    profile_cascade: Optional["cv2.CascadeClassifier"] = None,
+    upperbody_cascade: Optional["cv2.CascadeClassifier"] = None,
+) -> List[Tuple[int, int, int, int]]:
+    """Detect faces across frontal, profile, and upper-body angles.
+
+    Filters out detections in the lower 35% of the frame (hands, belts, microphones)
+    and sorts by box area (largest foreground face first). If faces are turned
+    or blocked by microphones, upper-body detection estimates head position.
+    """
+    f_boxes = list(face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4, minSize=(40, 40)))
+    p_boxes: List[Any] = []
+    p_flip_adj: List[Any] = []
+
+    if profile_cascade is not None:
+        p_boxes = list(profile_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4, minSize=(40, 40)))
+        gray_flip = cv2.flip(gray, 1)
+        p_flip = list(profile_cascade.detectMultiScale(gray_flip, scaleFactor=1.1, minNeighbors=4, minSize=(40, 40)))
+        p_flip_adj = [[src_w - (x + w), y, w, h] for (x, y, w, h) in p_flip]
+
+    all_boxes = [b for b in f_boxes + p_boxes + p_flip_adj if b[1] < src_h * 0.65]
+
+    # Upper-body fallback: if face is obscured by microphone or tilted downward
+    if not all_boxes and upperbody_cascade is not None:
+        ub_boxes = list(upperbody_cascade.detectMultiScale(gray, scaleFactor=1.15, minNeighbors=3, minSize=(80, 80)))
+        for ub_x, ub_y, ub_w, ub_h in ub_boxes:
+            if ub_y < src_h * 0.70:
+                head_w = int(ub_w * 0.45)
+                head_h = int(ub_h * 0.40)
+                head_x = max(0, ub_x + (ub_w - head_w) // 2)
+                head_y = max(0, ub_y - int(head_h * 0.45))
+                all_boxes.append((head_x, head_y, head_w, head_h))
+
+    return sorted(all_boxes, key=lambda b: b[2] * b[3], reverse=True)
+
+
+def _pre_scan_samples_single(
     cap: "cv2.VideoCapture",
     src_w: int, src_h: int,
     total_frames: int, fps: float,
     face_cascade: "cv2.CascadeClassifier",
-) -> Tuple[List[Tuple[int, int]], bool]:
-    """Pass 1: sample at *PRE_SCAN_FPS, detect ALL faces, return a smooth
-    per-frame crop-center trajectory + whether padded blur was triggered.
-
-    Unlike naive single-face tracking, this computes the *union bounding
-    box* of ALL detected faces per sample frame. The tracking target is
-    the center of the union, keeping every face in frame. When the union
-    is too wide for 9:16, *use_blur* is set and the renderer falls back
-    to blurred fill.
-
-    Returns (trajectory, use_blur) where:
-      *trajectory* is a list of (cx, cy) with length == total_frames.
-      *use_blur* is True when the scene content does not fit 9:16.
-    """
+    profile_cascade: Optional["cv2.CascadeClassifier"] = None,
+    upperbody_cascade: Optional["cv2.CascadeClassifier"] = None,
+) -> Tuple[List[Dict[str, Any]], List[int]]:
+    """Pass 1 (Single Focus): Coarse Discovery pre-scan sampling."""
     sample_every = max(1, int(fps / _PRE_SCAN_FPS))
+    samples: List[Dict[str, Any]] = []
+    prev_small: Optional["np.ndarray"] = None
+    union_widths: List[int] = []
 
-    # ── Phase 1: collect ALL face boxes per sample ──
-    # Each entry: (frame_idx, union_cx, union_cy, union_width, face_count)
-    raw: List[Tuple[int, Optional[int], Optional[int], int, int]] = []
     frame_idx = 0
     while True:
         ret, frame = cap.read()
@@ -633,10 +938,20 @@ def _pre_scan_trajectory(
             break
         if frame_idx % sample_every == 0:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            faces = face_cascade.detectMultiScale(
-                gray, scaleFactor=1.1, minNeighbors=5, minSize=(80, 80)
-            )
-            if len(faces) > 0:
+            small = cv2.resize(gray, (160, 90))
+            is_cut = False
+            if prev_small is not None:
+                diff = float(np.mean(cv2.absdiff(small, prev_small)))
+                if diff > 28.0:
+                    is_cut = True
+            else:
+                is_cut = True
+            prev_small = small
+
+            faces = _detect_all_faces(gray, src_w, src_h, face_cascade, profile_cascade, upperbody_cascade)
+            u_cx = u_cy = None
+            u_w = 0
+            if faces:
                 xs = [f[0] for f in faces]
                 ys = [f[1] for f in faces]
                 xe = [f[0] + f[2] for f in faces]
@@ -644,61 +959,432 @@ def _pre_scan_trajectory(
                 u_cx = (min(xs) + max(xe)) // 2
                 u_cy = (min(ys) + max(ye)) // 2
                 u_w = max(xe) - min(xs)
-                raw.append((frame_idx, u_cx, u_cy, u_w, len(faces)))
-            else:
-                raw.append((frame_idx, None, None, 0, 0))
+                union_widths.append(u_w)
+
+            samples.append({
+                "frame_idx": frame_idx,
+                "is_cut": is_cut,
+                "cx": u_cx,
+                "cy": u_cy,
+                "faces_count": len(faces),
+            })
         frame_idx += 1
 
-    # ── Phase 2: forward-fill missing detections ──
-    last_cx, last_cy = src_w // 2, src_h // 2
-    filled: List[Tuple[int, int, int, int]] = []  # (frame_idx, cx, cy, face_count)
-    for det in raw:
-        if det[1] is not None:
-            last_cx, last_cy = det[1], det[2]
-        filled.append((det[0], last_cx, last_cy, det[4]))
+    return samples, union_widths
 
-    # ── Phase 3: median filter over temporal window ──
-    medianed: List[Tuple[int, int]] = []
-    half = _PRE_SCAN_MEDIAN_WINDOW // 2
-    for i in range(len(filled)):
-        window = filled[max(0, i - half):min(len(filled), i + half + 1)]
-        cx = int(np.median([c[1] for c in window]))
-        cy = int(np.median([c[2] for c in window]))
-        medianed.append((cx, cy))
 
-    # ── Phase 4: EMA smooth (camera-like easing) ──
-    ema: List[Tuple[int, int]] = []
-    prev = (src_w // 2, src_h // 2)
-    for cx, cy in medianed:
-        sx = int(prev[0] + (cx - prev[0]) * 0.3)
-        sy = int(prev[1] + (cy - prev[1]) * 0.3)
-        ema.append((sx, sy))
-        prev = (sx, sy)
+def _refine_cut_frame(
+    cap: "cv2.VideoCapture",
+    f_start: int,
+    f_end: int,
+    threshold: float = 25.0,
+) -> int:
+    """Refine a coarse scene cut between f_start and f_end to the exact frame.
 
-    # ── Detect blur-fill condition ──
-    # Use the MEDIAN union width across samples (not max) so a single
-    # noisy detection frame does not trigger blur fill for the whole clip.
-    crop_w, _ = _crop_dims(src_w, src_h)
-    union_widths = [d[3] for d in raw if d[1] is not None]
+    Scans downscaled grayscale thumbnails (80x45) frame-by-frame between f_start and f_end.
+    Returns the exact frame index where consecutive frame difference is maximized.
+    If no difference exceeds threshold, returns f_end.
+    """
+    if f_end <= f_start + 1:
+        return f_end
+
+    cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, f_start))
+    prev_small: Optional["np.ndarray"] = None
+    max_diff = 0.0
+    best_f = f_end
+
+    for fi in range(f_start, f_end + 1):
+        ret, frame = cap.read()
+        if not ret:
+            break
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        small = cv2.resize(gray, (80, 45))
+        if prev_small is not None:
+            diff = float(np.mean(cv2.absdiff(small, prev_small)))
+            if diff > max_diff and diff >= threshold:
+                max_diff = diff
+                best_f = fi
+        prev_small = small
+
+    return best_f
+
+
+def _audit_and_refine_trajectory(
+    samples: List[Dict[str, Any]],
+    union_widths: List[int],
+    src_w: int, src_h: int,
+    total_frames: int, fps: float,
+    crop_w: int,
+    cap: Optional["cv2.VideoCapture"] = None,
+) -> Tuple[List[Tuple[int, int]], bool]:
+    """Pass 2 (Single Focus): Imperfection Audit & Refinement Pass.
+
+    Audits shot boundaries, merges false-positive micro-shots (<1.2s), clamps
+    vertical headroom to the safe zone, and locks framing anchors with zero jitter.
+    """
+    default_head_y = int(src_h * 0.28)
     median_union_w = int(np.median(union_widths)) if union_widths else 0
     use_blur = median_union_w > crop_w * 0.8
 
-    # ── Phase 5: interpolate samples -> per-frame trajectory ──
-    def _smoothstep(t: float) -> float:
-        return t * t * (3.0 - 2.0 * t)
+    # Partition raw samples into shots
+    raw_shots: List[List[Dict[str, Any]]] = []
+    current_shot: List[Dict[str, Any]] = []
+    for s in samples:
+        if s["is_cut"] and current_shot:
+            raw_shots.append(current_shot)
+            current_shot = []
+        current_shot.append(s)
+    if current_shot:
+        raw_shots.append(current_shot)
+
+    # Imperfection 1: Merge false micro-shots (<1.2s)
+    min_shot_samples = max(2, int(1.2 * _PRE_SCAN_FPS))
+    merged_shots: List[List[Dict[str, Any]]] = []
+    for shot in raw_shots:
+        if merged_shots and len(shot) < min_shot_samples:
+            prev = merged_shots[-1]
+            prev_cx = [s["cx"] for s in prev if s["cx"] is not None]
+            cur_cx = [s["cx"] for s in shot if s["cx"] is not None]
+            if prev_cx and cur_cx and abs(np.median(cur_cx) - np.median(prev_cx)) < (src_w * 0.08):
+                merged_shots[-1].extend(shot)
+                continue
+        merged_shots.append(shot)
+
+    # Refine cut boundaries to exact frame
+    if cap is not None and len(merged_shots) > 1:
+        for idx in range(len(merged_shots) - 1):
+            f_prev = merged_shots[idx][-1]["frame_idx"]
+            f_curr = merged_shots[idx + 1][0]["frame_idx"]
+            exact_f = _refine_cut_frame(cap, f_prev, f_curr)
+            merged_shots[idx + 1][0]["frame_idx"] = exact_f
+
+    # Imperfection 2: Clamped locked anchors per shot
+    last_anchor = (src_w // 2, default_head_y)
+    shot_anchors: List[Tuple[Tuple[int, int], int, int]] = []
+    min_head_y = int(src_h * 0.15)
+    max_head_y = int(src_h * 0.45)
+
+    for idx, shot in enumerate(merged_shots):
+        valid_cxs = [s["cx"] for s in shot if s["cx"] is not None]
+        valid_cys = [s["cy"] for s in shot if s["cy"] is not None]
+        if valid_cxs and valid_cys:
+            ax = int(np.median(valid_cxs))
+            ay = max(min_head_y, min(max_head_y, int(np.median(valid_cys))))
+            anchor = (ax, ay)
+            last_anchor = anchor
+        else:
+            anchor = last_anchor
+        start_f = shot[0]["frame_idx"]
+        next_start_f = merged_shots[idx + 1][0]["frame_idx"] if idx + 1 < len(merged_shots) else total_frames
+        shot_anchors.append((anchor, start_f, next_start_f))
 
     trajectory: List[Tuple[int, int]] = []
+    current_shot_idx = 0
     for fi in range(total_frames):
-        si = fi // sample_every
-        si = min(si, len(ema) - 1)
-        ni = min(si + 1, len(ema) - 1)
-        t = (fi % sample_every) / sample_every if sample_every > 0 else 0.0
-        st = _smoothstep(t)
-        ex = int(ema[si][0] + (ema[ni][0] - ema[si][0]) * st)
-        ey = int(ema[si][1] + (ema[ni][1] - ema[si][1]) * st)
-        trajectory.append((ex, ey))
+        while current_shot_idx < len(shot_anchors) - 1 and fi >= shot_anchors[current_shot_idx][2]:
+            current_shot_idx += 1
+        anchor = shot_anchors[current_shot_idx][0] if shot_anchors else (src_w // 2, default_head_y)
+        trajectory.append(anchor)
 
     return trajectory, use_blur
+
+
+def _pre_scan_trajectory(
+    cap: "cv2.VideoCapture",
+    src_w: int, src_h: int,
+    total_frames: int, fps: float,
+    face_cascade: "cv2.CascadeClassifier",
+    profile_cascade: Optional["cv2.CascadeClassifier"] = None,
+    upperbody_cascade: Optional["cv2.CascadeClassifier"] = None,
+) -> Tuple[List[Tuple[int, int]], bool]:
+    """Single-focus wrapper executing Pass 1 (Discovery) + Pass 2 (Refinement)."""
+    crop_w, _ = _crop_dims(src_w, src_h)
+    samples, union_widths = _pre_scan_samples_single(
+        cap, src_w, src_h, total_frames, fps, face_cascade, profile_cascade, upperbody_cascade
+    )
+    return _audit_and_refine_trajectory(
+        samples, union_widths, src_w, src_h, total_frames, fps, crop_w, cap=cap
+    )
+
+
+def _pre_scan_samples_pair(
+    cap: "cv2.VideoCapture",
+    src_w: int, src_h: int,
+    total_frames: int, fps: float,
+    face_cascade: "cv2.CascadeClassifier",
+    profile_cascade: Optional["cv2.CascadeClassifier"] = None,
+    upperbody_cascade: Optional["cv2.CascadeClassifier"] = None,
+) -> Tuple[List[Dict[str, Any]], List[Tuple[float, float, float]], List[int]]:
+    """Pass 1 (Podcast Split): Coarse Discovery pre-scan sampling.
+
+    Gathers face coordinates, speaker spatial halves, candidate cuts, and lip/jaw motion energy.
+    """
+    sample_every = max(1, int(fps / _PRE_SCAN_FPS))
+    mid = src_w // 2
+
+    samples: List[Dict[str, Any]] = []
+    prev_small: Optional["np.ndarray"] = None
+    prev_mouth_l: Optional["np.ndarray"] = None
+    prev_mouth_r: Optional["np.ndarray"] = None
+    mouth_activity: List[Tuple[float, float, float]] = []
+    all_face_heights: List[int] = []
+
+    frame_idx = 0
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        if frame_idx % sample_every == 0:
+            time_s = frame_idx / fps if fps > 0 else 0.0
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            small = cv2.resize(gray, (160, 90))
+            is_cut = False
+            if prev_small is not None:
+                diff = float(np.mean(cv2.absdiff(small, prev_small)))
+                if diff > 28.0:
+                    is_cut = True
+            else:
+                is_cut = True
+            prev_small = small
+
+            faces = _detect_all_faces(gray, src_w, src_h, face_cascade, profile_cascade, upperbody_cascade)
+            for f in faces:
+                all_face_heights.append(f[3])
+
+            lb = [b for b in faces if (b[0] + b[2] // 2) < (mid + int(src_w * 0.04))]
+            rb = [b for b in faces if (b[0] + b[2] // 2) >= (mid - int(src_w * 0.04))]
+
+            lx = ly = lw = lh = None
+            rx = ry = rw = rh = None
+            if lb:
+                b = lb[0]
+                lx, ly, lw, lh = b[0] + b[2] // 2, b[1] + b[3] // 2, b[2], b[3]
+            if rb:
+                b = rb[0]
+                rx, ry, rw, rh = b[0] + b[2] // 2, b[1] + b[3] // 2, b[2], b[3]
+
+            # Measure mouth motion energy for active speaker detection
+            diff_l = 0.0
+            diff_r = 0.0
+            if lb and lw and lh:
+                my0 = min(src_h - 2, ly + int(lh * 0.10))
+                my1 = min(src_h, my0 + int(lh * 0.40))
+                mx0 = max(0, lx - int(lw * 0.30))
+                mx1 = min(src_w, lx + int(lw * 0.30))
+                if my1 > my0 and mx1 > mx0:
+                    patch = cv2.resize(gray[my0:my1, mx0:mx1], (32, 24))
+                    if prev_mouth_l is not None:
+                        diff_l = float(np.mean(cv2.absdiff(patch, prev_mouth_l)))
+                    prev_mouth_l = patch
+
+            if rb and rw and rh:
+                my0 = min(src_h - 2, ry + int(rh * 0.10))
+                my1 = min(src_h, my0 + int(rh * 0.40))
+                mx0 = max(0, rx - int(rw * 0.30))
+                mx1 = min(src_w, rx + int(rw * 0.30))
+                if my1 > my0 and mx1 > mx0:
+                    patch = cv2.resize(gray[my0:my1, mx0:mx1], (32, 24))
+                    if prev_mouth_r is not None:
+                        diff_r = float(np.mean(cv2.absdiff(patch, prev_mouth_r)))
+                    prev_mouth_r = patch
+
+            mouth_activity.append((time_s, diff_l, diff_r))
+
+            distinct_two = False
+            if lx is not None and rx is not None:
+                if abs(rx - lx) > (src_w * 0.22):
+                    distinct_two = True
+
+            samples.append({
+                "frame_idx": frame_idx,
+                "is_cut": is_cut,
+                "lx": lx,
+                "ly": ly,
+                "rx": rx,
+                "ry": ry,
+                "all_faces": faces,
+                "distinct_two": distinct_two,
+            })
+        frame_idx += 1
+
+    return samples, mouth_activity, all_face_heights
+
+
+def _audit_and_refine_trajectory_pair(
+    samples: List[Dict[str, Any]],
+    mouth_activity: List[Tuple[float, float, float]],
+    all_face_heights: List[int],
+    src_w: int,
+    src_h: int,
+    total_frames: int,
+    fps: float,
+    cap: Optional["cv2.VideoCapture"] = None,
+) -> Tuple[
+    List[Tuple[int, int]],
+    List[Tuple[int, int]],
+    List[bool],
+    List[Tuple[int, int]],
+    List[Tuple[float, float, float]],
+    float,
+    List[float],
+]:
+    """Pass 2 (Podcast Split): Imperfection Audit & Refinement Pass.
+
+    Audits the coarse detections from Pass 1, catching and correcting:
+      1. False-positive micro-shots (<1.2s) caused by sudden lighting or gestures.
+      2. Exact sub-second cut boundary alignment (scans localized window to pinpoint exact frame).
+      3. Solo vs Dual shot discrepancies (heals 1-frame face dropouts in 2-person shots,
+         prunes ghost second faces in 1-person shots).
+      4. Horizontal anchor separation (guarantees >= 20% width between Left and Right).
+      5. Vertical headroom validation (clamps anchors within 15%..48% safe head height).
+      6. Smoothed adaptive bust scaling and cleaned mouth motion energy.
+    """
+    default_head_y = int(src_h * 0.28)
+
+    # 1. Group raw samples into candidate shots based on scene cuts
+    raw_shots: List[List[Dict[str, Any]]] = []
+    current_shot: List[Dict[str, Any]] = []
+    for s in samples:
+        if s["is_cut"] and current_shot:
+            raw_shots.append(current_shot)
+            current_shot = []
+        current_shot.append(s)
+    if current_shot:
+        raw_shots.append(current_shot)
+
+    # 2. Imperfection 1: Filter false-positive micro-cuts (<1.2s)
+    min_shot_samples = max(2, int(1.2 * _PRE_SCAN_FPS))
+    merged_shots: List[List[Dict[str, Any]]] = []
+    for shot in raw_shots:
+        if merged_shots and len(shot) < min_shot_samples:
+            prev = merged_shots[-1]
+            prev_l = [s["lx"] for s in prev if s["lx"] is not None]
+            cur_l = [s["lx"] for s in shot if s["lx"] is not None]
+            if prev_l and cur_l and abs(np.median(cur_l) - np.median(prev_l)) < (src_w * 0.08):
+                merged_shots[-1].extend(shot)
+                continue
+        merged_shots.append(shot)
+
+    # 2b. Exact Scene Cut Refinement: Pinpoint cut boundaries to exact frame
+    refined_cuts: List[int] = []
+    if cap is not None and len(merged_shots) > 1:
+        for idx in range(len(merged_shots) - 1):
+            f_prev = merged_shots[idx][-1]["frame_idx"]
+            f_curr = merged_shots[idx + 1][0]["frame_idx"]
+            exact_f = _refine_cut_frame(cap, f_prev, f_curr)
+            merged_shots[idx + 1][0]["frame_idx"] = exact_f
+            refined_cuts.append(exact_f)
+
+    cut_timestamps: List[float] = [f / fps for f in refined_cuts if fps > 0]
+
+    # 3. Imperfection 2 & 3: Audit Shot Consistency, Dropout Healing, and Anchor Separation
+    shot_data: List[Dict[str, Any]] = []
+    last_l = (src_w // 4, default_head_y)
+    last_r = (src_w * 3 // 4, default_head_y)
+    last_solo = (src_w // 2, default_head_y)
+
+    for idx, shot in enumerate(merged_shots):
+        start_f = shot[0]["frame_idx"]
+        next_start_f = merged_shots[idx + 1][0]["frame_idx"] if idx + 1 < len(merged_shots) else total_frames
+
+        valid_samples = [s for s in shot if len(s["all_faces"]) > 0]
+        two_person_count = sum(1 for s in shot if s["distinct_two"])
+        total_valid = len(valid_samples)
+
+        # Shot classification audit:
+        # If >= 35% of valid frames show 2 distinct people, enforce DUAL shot for the entire shot
+        # (heals temporary dropouts where one speaker looked down or sipped water)
+        if total_valid > 0:
+            is_solo_shot = (two_person_count / max(1, total_valid)) < 0.35
+        else:
+            is_solo_shot = shot_data[-1]["is_solo"] if shot_data else False
+
+        # Calculate stable median anchors
+        left_xs = [s["lx"] for s in shot if s["lx"] is not None]
+        left_ys = [s["ly"] for s in shot if s["ly"] is not None]
+        right_xs = [s["rx"] for s in shot if s["rx"] is not None]
+        right_ys = [s["ry"] for s in shot if s["ry"] is not None]
+
+        raw_al = (int(np.median(left_xs)), int(np.median(left_ys))) if (left_xs and left_ys) else last_l
+        raw_ar = (int(np.median(right_xs)), int(np.median(right_ys))) if (right_xs and right_ys) else last_r
+
+        # Enforce minimum horizontal separation in dual shots
+        al_x, al_y = raw_al
+        ar_x, ar_y = raw_ar
+        min_sep = int(src_w * 0.20)
+        if not is_solo_shot and (ar_x - al_x < min_sep):
+            al_x = min(al_x, src_w // 3)
+            ar_x = max(ar_x, src_w * 2 // 3)
+
+        # Enforce safe headroom bounds: clamp y to 15%..48% of source height
+        min_head_y = int(src_h * 0.15)
+        max_head_y = int(src_h * 0.48)
+        al_y = max(min_head_y, min(max_head_y, al_y))
+        ar_y = max(min_head_y, min(max_head_y, ar_y))
+
+        anchor_l = (al_x, al_y)
+        anchor_r = (ar_x, ar_y)
+        last_l, last_r = anchor_l, anchor_r
+
+        # Solo anchor
+        all_cxs = []
+        all_cys = []
+        for s in shot:
+            for f in s["all_faces"]:
+                all_cxs.append(f[0] + f[2] // 2)
+                all_cys.append(f[1] + f[3] // 2)
+        if all_cxs and all_cys:
+            solo_x = int(np.median(all_cxs))
+            solo_y = max(min_head_y, min(max_head_y, int(np.median(all_cys))))
+            anchor_solo = (solo_x, solo_y)
+            last_solo = anchor_solo
+        else:
+            anchor_solo = last_solo
+
+        shot_data.append({
+            "start_f": start_f,
+            "end_f": next_start_f,
+            "is_solo": is_solo_shot,
+            "anchor_l": anchor_l,
+            "anchor_r": anchor_r,
+            "anchor_solo": anchor_solo,
+        })
+
+    # 4. Imperfection 4: Adaptive Bust Scale Calculation
+    if all_face_heights:
+        med_h = float(np.median(all_face_heights))
+        ratio = med_h / max(1, src_h)
+        if ratio < 0.11:
+            adaptive_bust_scale = 0.72
+        elif ratio > 0.22:
+            adaptive_bust_scale = 0.88
+        else:
+            adaptive_bust_scale = 0.80
+    else:
+        adaptive_bust_scale = 0.82
+
+    # 5. Build perfected per-frame trajectories
+    traj_left: List[Tuple[int, int]] = []
+    traj_right: List[Tuple[int, int]] = []
+    solo_mask: List[bool] = []
+    solo_traj: List[Tuple[int, int]] = []
+
+    current_shot_idx = 0
+    for fi in range(total_frames):
+        while current_shot_idx < len(shot_data) - 1 and fi >= shot_data[current_shot_idx]["end_f"]:
+            current_shot_idx += 1
+        cur = shot_data[current_shot_idx] if shot_data else {
+            "is_solo": False,
+            "anchor_l": (src_w // 4, default_head_y),
+            "anchor_r": (src_w * 3 // 4, default_head_y),
+            "anchor_solo": (src_w // 2, default_head_y),
+        }
+        traj_left.append(cur["anchor_l"])
+        traj_right.append(cur["anchor_r"])
+        solo_mask.append(cur["is_solo"])
+        solo_traj.append(cur["anchor_solo"])
+
+    return traj_left, traj_right, solo_mask, solo_traj, mouth_activity, adaptive_bust_scale, cut_timestamps
 
 
 def _pre_scan_trajectory_pair(
@@ -706,81 +1392,23 @@ def _pre_scan_trajectory_pair(
     src_w: int, src_h: int,
     total_frames: int, fps: float,
     face_cascade: "cv2.CascadeClassifier",
-) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
-    """Pass 1 for the podcast split: two smoothed trajectories — one per
-    speaker half (left half -> top panel, right half -> bottom panel).
-
-    Faces are separated by whether their center-x sits left or right of the
-    source midpoint, so each panel tracks its own speaker. Halves with no
-    face detections fall back to their natural center.
-
-    Returns (traj_left, traj_right) with length == total_frames each.
-    """
-    sample_every = max(1, int(fps / _PRE_SCAN_FPS))
-    mid = src_w // 2
-
-    # raw per-sample points per half: (frame_idx, cx, cy) or None
-    raw_left: List[Tuple[int, Optional[int], Optional[int]]] = []
-    raw_right: List[Tuple[int, Optional[int], Optional[int]]] = []
-    frame_idx = 0
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        if frame_idx % sample_every == 0:
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            faces = face_cascade.detectMultiScale(
-                gray, scaleFactor=1.1, minNeighbors=5, minSize=(80, 80)
-            )
-            lx = ly = rx = ry = None
-            if len(faces) > 0:
-                for (x, y, w_box, h_box) in faces:
-                    fcx = x + w_box // 2
-                    fcy = y + h_box // 2
-                    if fcx < mid:
-                        lx, ly = fcx, fcy
-                    else:
-                        rx, ry = fcx, fcy
-            raw_left.append((frame_idx, lx, ly))
-            raw_right.append((frame_idx, rx, ry))
-        frame_idx += 1
-
-    def _build(raw: List[Tuple[int, Optional[int], Optional[int]]], default_xy: Tuple[int, int]) -> List[Tuple[int, int]]:
-        last_cx, last_cy = default_xy
-        filled: List[Tuple[int, int]] = []
-        for det in raw:
-            if det[1] is not None:
-                last_cx, last_cy = det[1], det[2]
-            filled.append((last_cx, last_cy))
-        half = _PRE_SCAN_MEDIAN_WINDOW // 2
-        medianed = []
-        for i in range(len(filled)):
-            window = filled[max(0, i - half):min(len(filled), i + half + 1)]
-            medianed.append((int(np.median([c[0] for c in window])), int(np.median([c[1] for c in window]))))
-        ema: List[Tuple[int, int]] = []
-        prev = default_xy
-        for cx, cy in medianed:
-            sx = int(prev[0] + (cx - prev[0]) * 0.3)
-            sy = int(prev[1] + (cy - prev[1]) * 0.3)
-            ema.append((sx, sy))
-            prev = (sx, sy)
-        def _smoothstep(t: float) -> float:
-            return t * t * (3.0 - 2.0 * t)
-        traj: List[Tuple[int, int]] = []
-        for fi in range(total_frames):
-            si = fi // sample_every
-            si = min(si, len(ema) - 1)
-            ni = min(si + 1, len(ema) - 1)
-            t = (fi % sample_every) / sample_every if sample_every > 0 else 0.0
-            st = _smoothstep(t)
-            ex = int(ema[si][0] + (ema[ni][0] - ema[si][0]) * st)
-            ey = int(ema[si][1] + (ema[ni][1] - ema[si][1]) * st)
-            traj.append((ex, ey))
-        return traj
-
-    return (
-        _build(raw_left, (src_w // 4, src_h // 2)),
-        _build(raw_right, (src_w * 3 // 4, src_h // 2)),
+    profile_cascade: Optional["cv2.CascadeClassifier"] = None,
+    upperbody_cascade: Optional["cv2.CascadeClassifier"] = None,
+) -> Tuple[
+    List[Tuple[int, int]],
+    List[Tuple[int, int]],
+    List[bool],
+    List[Tuple[int, int]],
+    List[Tuple[float, float, float]],
+    float,
+    List[float],
+]:
+    """Podcast split wrapper executing Pass 1 (Discovery) + Pass 2 (Refinement)."""
+    samples, mouth_activity, all_face_heights = _pre_scan_samples_pair(
+        cap, src_w, src_h, total_frames, fps, face_cascade, profile_cascade, upperbody_cascade
+    )
+    return _audit_and_refine_trajectory_pair(
+        samples, mouth_activity, all_face_heights, src_w, src_h, total_frames, fps, cap=cap
     )
 
 
@@ -850,21 +1478,149 @@ def _crop_layered(
     return bg
 
 
+def _calculate_zoom_factor(
+    clip_time: float,
+    segments: Optional[List[Dict]] = None,
+    enabled: bool = True,
+    zoom_scale: float = 1.15,
+) -> float:
+    """Calculate the zoom factor (1.0 or 1.15) for dynamic visual retention.
+
+    Alternates between a standard medium shot (1.0x) and a close-up punch-in
+    (1.15x) on sentence boundaries (or every ~4s) to reset viewer attention
+    and simulate a multi-camera studio setup.
+    """
+    if not enabled or zoom_scale <= 1.0:
+        return 1.0
+
+    # If segments are available, align camera cuts with natural speech boundaries
+    if segments:
+        for i, seg in enumerate(segments):
+            start = float(seg.get("start", 0.0))
+            end = float(seg.get("end", start))
+            if start <= clip_time < end:
+                seg_dur = end - start
+                if seg_dur > 5.0:
+                    sub_idx = int((clip_time - start) // 3.5)
+                    return zoom_scale if ((i + sub_idx) % 2 == 1) else 1.0
+                return zoom_scale if (i % 2 == 1) else 1.0
+
+    # Fallback to rhythmic 4.0s cadence
+    cadence = 4.0
+    period_idx = int(clip_time // cadence)
+    return zoom_scale if (period_idx % 2 == 1) else 1.0
+
+
+def _render_full_bleed_canvas(
+    frame: "np.ndarray",
+    src_w: int, src_h: int,
+    cx: int, cy: int,
+    zoom: float = 1.0,
+    clamp_half: Optional[str] = None,
+) -> "np.ndarray":
+    """Full-bleed 9:16 portrait canvas (1080x1920) edge-to-edge.
+
+    Dynamically tracks the speaker's face, keeping eyes and head framed naturally
+    in the upper third (~28% from top) and torso below. No black bars, no floating box.
+    """
+    aspect = 9.0 / 16.0
+    if src_h * aspect <= src_w:
+        base_ch = src_h
+        base_cw = int(base_ch * aspect)
+    else:
+        base_cw = src_w
+        base_ch = int(base_cw / aspect)
+
+    z = max(1.0, float(zoom))
+    cw = max(2, int(base_cw / z))
+    ch = max(2, int(base_ch / z))
+    cw -= cw % 2
+    ch -= ch % 2
+
+    # Horizontal center on tracked face with optional half-width clamping
+    mid = src_w // 2
+    if clamp_half == "left" and cw <= mid:
+        x0 = max(0, min(mid - cw, cx - cw // 2))
+    elif clamp_half == "right" and cw <= mid:
+        x0 = max(mid, min(src_w - cw, cx - cw // 2))
+    else:
+        x0 = max(0, min(src_w - cw, cx - cw // 2))
+
+    # Vertical positioning: place eyes/head in upper third
+    head_frac = 0.28
+    y0 = max(0, min(src_h - ch, cy - int(ch * head_frac)))
+
+    region = frame[y0:y0 + ch, x0:x0 + cw]
+    return cv2.resize(region, (CANVAS_W, CANVAS_H), interpolation=cv2.INTER_LINEAR)
+
+
+def _render_blurred_backdrop_canvas(
+    frame: "np.ndarray",
+    src_w: int, src_h: int,
+    cx: Optional[int] = None,
+    cy: Optional[int] = None,
+    zoom: float = 1.0,
+) -> "np.ndarray":
+    """Ambient blurred backdrop with sharp foreground video centered.
+
+    Never leaves solid black voids. Background is scaled to fill 1080x1920,
+    heavily blurred and darkened by 45%. Foreground video is centered
+    maintaining aspect ratio with crisp framing.
+    """
+    # 1. Background layer: cover 1080x1920, blur and darken
+    bg_scale = max(CANVAS_W / src_w, CANVAS_H / src_h)
+    bg_w = int(src_w * bg_scale)
+    bg_h = int(src_h * bg_scale)
+    bg_full = cv2.resize(frame, (bg_w, bg_h), interpolation=cv2.INTER_LINEAR)
+
+    bg_x = max(0, (bg_w - CANVAS_W) // 2)
+    bg_y = max(0, (bg_h - CANVAS_H) // 2)
+    bg = bg_full[bg_y:bg_y + CANVAS_H, bg_x:bg_x + CANVAS_W]
+    if bg.shape[0] != CANVAS_H or bg.shape[1] != CANVAS_W:
+        bg = cv2.resize(bg, (CANVAS_W, CANVAS_H))
+
+    # Fast two-pass blur
+    small = cv2.resize(bg, (135, 240), interpolation=cv2.INTER_LINEAR)
+    blurred_small = cv2.GaussianBlur(small, (25, 25), 0)
+    bg = cv2.resize(blurred_small, (CANVAS_W, CANVAS_H), interpolation=cv2.INTER_LINEAR)
+    # Darken so foreground stands out
+    bg = (bg.astype(np.float32) * 0.45).astype(np.uint8)
+
+    # 2. Foreground layer: fit within width CANVAS_W and center vertically
+    z = max(1.0, float(zoom))
+    fg_scale = (CANVAS_W / src_w) * z
+    fg_w = int(src_w * fg_scale)
+    fg_h = int(src_h * fg_scale)
+    fg_resized = cv2.resize(frame, (fg_w, fg_h), interpolation=cv2.INTER_LINEAR)
+
+    # Center crop foreground if it exceeds canvas bounds
+    if fg_w > CANVAS_W or fg_h > CANVAS_H:
+        start_x = max(0, (fg_w - CANVAS_W) // 2)
+        start_y = max(0, (fg_h - CANVAS_H) // 2)
+        crop_fg_w = min(CANVAS_W, fg_w)
+        crop_fg_h = min(CANVAS_H, fg_h)
+        fg_cropped = fg_resized[start_y:start_y + crop_fg_h, start_x:start_x + crop_fg_w]
+        fg_y0 = max(0, (CANVAS_H - crop_fg_h) // 2)
+        fg_x0 = max(0, (CANVAS_W - crop_fg_w) // 2)
+        bg[fg_y0:fg_y0 + crop_fg_h, fg_x0:fg_x0 + crop_fg_w] = fg_cropped
+    else:
+        fg_y0 = max(0, (CANVAS_H - fg_h) // 2)
+        fg_x0 = max(0, (CANVAS_W - fg_w) // 2)
+        bg[fg_y0:fg_y0 + fg_h, fg_x0:fg_x0 + fg_w] = fg_resized
+
+    return bg
+
+
 def _render_stage_canvas(
     frame: "np.ndarray",
     src_w: int, src_h: int,
     cx: int, cy: int,
+    zoom: float = 1.0,
 ) -> "np.ndarray":
-    """Template 1 (Stage & Solo Speaker): video confined to the PRIMARY
-    STAGE region (1080x1152 px at y 441-1593) on a solid-black 1080x1920
-    canvas.
-
-    Top safe zone (0-441px) and bottom safe zone (1593-1920px) are pure
-    black. The source is cropped to the stage's aspect ratio (0.9375),
-    centered on the tracked head & torso, and scaled to fill the stage —
-    the head sits near the top of the stage, torso below.
+    """Stage & Solo Speaker: Video fills the primary stage (1080x1152) with an
+    ambient blurred background filling top and bottom safe zones (no pitch-black bars).
     """
-    canvas = np.zeros((CANVAS_H, CANVAS_W, 3), dtype=np.uint8)
+    canvas = _render_blurred_backdrop_canvas(frame, src_w, src_h, cx, cy, zoom=zoom)
     stage_w, stage_h = CANVAS_W, STAGE_H          # 1080 x 1152 primary stage (60%)
     stage_y0 = TOP_SAFE_H                         # 441px (23%)
     aspect = stage_w / stage_h                  # 0.9375
@@ -875,11 +1631,13 @@ def _render_stage_canvas(
     else:
         cw = src_w
         ch = int(cw / aspect)
+
+    z = max(1.0, float(zoom))
+    cw = max(2, int(cw / z))
+    ch = max(2, int(ch / z))
     cw -= cw % 2
     ch -= ch % 2
 
-    # Horizontal center on the tracked face; vertically keep the head near
-    # the top of the stage so head + torso fill the zone.
     x0 = max(0, min(src_w - cw, cx - cw // 2))
     head_frac = 0.20
     y0 = max(0, min(src_h - ch, cy - int(ch * head_frac)))
@@ -889,38 +1647,274 @@ def _render_stage_canvas(
     return canvas
 
 
+def _compute_podcast_solo_windows(
+    duration: float,
+    segments: Optional[List[Dict]] = None,
+    enabled: bool = True,
+    period: float = 8.0,
+    solo_dur: float = 2.6,
+    initial_delay: float = 3.5,
+    mouth_activity: Optional[List[Tuple[float, float, float]]] = None,
+    solo_mask: Optional[List[bool]] = None,
+    fps: float = 30.0,
+    cut_timestamps: Optional[List[float]] = None,
+) -> List[Tuple[float, float, int]]:
+    """Compute timestamps for dynamic full-vertical solo cuts during a podcast split.
+
+    Uses mouth/jaw motion energy from Pass 1 to ensure that when cutting to a full-screen
+    vertical solo shot, the person displayed is ALWAYS the host who is actively talking.
+    If the shot is already a single-person camera angle (solo_mask is True), artificial cuts
+    are skipped because the shot is already rendered full-bleed solo.
+    """
+    if not enabled or duration < (initial_delay + solo_dur + 1.0):
+        return []
+
+    # Gather candidate sentence boundaries from transcript
+    sentence_cuts: List[float] = []
+    if segments:
+        for seg in segments:
+            seg_start = float(seg.get("start", 0.0))
+            text = seg.get("text", "")
+            words = seg.get("words") or []
+            if words:
+                for idx, w in enumerate(words[:-1]):
+                    w_text = str(w.get("word", ""))
+                    if any(p in w_text for p in ".!?"):
+                        next_start = float(words[idx + 1].get("start", 0.0))
+                        sentence_cuts.append(next_start)
+            else:
+                for m in re.finditer(r"[.!?]", text):
+                    frac = m.end() / max(1, len(text))
+                    seg_dur = max(0.1, float(seg.get("end", seg_start)) - seg_start)
+                    sentence_cuts.append(seg_start + frac * seg_dur)
+
+    windows: List[Tuple[float, float, int]] = []
+    cur_t = initial_delay
+
+    while cur_t + solo_dur <= duration - 1.0:
+        # Snap start time to nearest sentence cut within 1.5s window if available
+        chosen_start = cur_t
+        for sc in sentence_cuts:
+            if abs(sc - cur_t) <= 1.5 and sc + solo_dur <= duration - 0.5:
+                chosen_start = sc
+                break
+
+        # Snap start time to nearest true scene cut within 1.2s if available
+        if cut_timestamps:
+            for ct in cut_timestamps:
+                if abs(ct - chosen_start) <= 1.2 and ct + solo_dur <= duration - 0.5:
+                    chosen_start = ct
+                    break
+
+        chosen_end = min(duration - 0.5, chosen_start + solo_dur)
+
+        # Do not allow dynamic solo window to span across a real scene cut
+        if cut_timestamps:
+            for ct in cut_timestamps:
+                if chosen_start < ct < chosen_end:
+                    chosen_end = ct
+                    break
+
+        if chosen_end - chosen_start < 1.2:
+            cur_t = chosen_end + max(2.5, (period - solo_dur))
+            continue
+
+        # If this window is already in a solo-camera shot, skip artificial solo cut
+        if solo_mask and fps > 0:
+            sf = int(chosen_start * fps)
+            ef = min(len(solo_mask), int(chosen_end * fps))
+            if sf < len(solo_mask) and any(solo_mask[sf:ef]):
+                cur_t = chosen_end + max(2.5, (period - solo_dur))
+                continue
+
+        # Active speaker detection: evaluate mouth motion energy during [chosen_start, chosen_end]
+        chosen_spk = 0
+        if mouth_activity:
+            window_samples = [s for s in mouth_activity if chosen_start <= s[0] <= chosen_end]
+            if window_samples:
+                avg_l = float(np.mean([s[1] for s in window_samples]))
+                avg_r = float(np.mean([s[2] for s in window_samples]))
+
+                if avg_l > avg_r * 1.12:
+                    chosen_spk = 0  # Left speaker active
+                elif avg_r > avg_l * 1.12:
+                    chosen_spk = 1  # Right speaker active
+                else:
+                    # If mouth motion is virtually zero on both, both are quiet/listening: skip cut
+                    if avg_l < 1.0 and avg_r < 1.0:
+                        cur_t = chosen_end + max(2.5, (period - solo_dur))
+                        continue
+                    chosen_spk = 0 if avg_l >= avg_r else 1
+
+        windows.append((chosen_start, chosen_end, chosen_spk))
+        cur_t = chosen_end + max(2.5, (period - solo_dur))
+
+    return windows
+
+
 def _render_podcast_canvas(
     frame: "np.ndarray",
     src_w: int, src_h: int,
     cx_left: int, cy_left: int,
     cx_right: int, cy_right: int,
+    crop_scale: float = 0.82,
+    head_frac: float = 0.38,
 ) -> "np.ndarray":
     """Template 2 (Podcast & Dialogue): two stacked 9:8 panels (1080x960
     each) on the 1080x1920 canvas.
 
-    Each panel crops a 9:8 region around its speaker's tracked face and is
-    scaled down to panel size. The left-half trajectory feeds the top panel,
-    the right-half trajectory feeds the bottom panel.
+    Each panel crops a Medium-Bust (chest-up) 9:8 region around its speaker's
+    tracked face with generous headroom protection, ensuring heads are never cut off.
     """
     panel_w, panel_h = CANVAS_W, CANVAS_H // 2  # 1080 x 960 (9:8)
     aspect = 9.0 / 8.0
 
     def _panel(cx: int, cy: int) -> "np.ndarray":
-        if src_h * aspect <= src_w:
-            ch = src_h
-            cw = int(ch * aspect)
-        else:
-            cw = src_w
-            ch = int(cw / aspect)
-        x0 = max(0, min(src_w - cw, cx - cw // 2))
-        y0 = max(0, min(src_h - ch, cy - ch // 2))
-        region = frame[y0:y0 + ch, x0:x0 + cw]
-        return cv2.resize(region, (panel_w, panel_h))
+        # Target medium-bust dimensions
+        target_ch = int(src_h * max(0.5, min(1.0, crop_scale)))
+        target_cw = int(target_ch * aspect)
+
+        # Bounds safety check against source dimensions
+        if target_cw > src_w:
+            target_cw = src_w
+            target_ch = int(target_cw / aspect)
+        if target_ch > src_h:
+            target_ch = src_h
+            target_cw = int(target_ch * aspect)
+
+        target_ch -= target_ch % 2
+        target_cw -= target_cw % 2
+        target_cw = max(2, target_cw)
+        target_ch = max(2, target_ch)
+
+        # Horizontal center on tracked speaker
+        x0 = max(0, min(src_w - target_cw, cx - target_cw // 2))
+
+        # Vertical head placement with headroom protection:
+        # Places head at ~38% of panel height, clamped at top y=0 so forehead/hair is never cropped
+        y0 = max(0, min(src_h - target_ch, cy - int(target_ch * head_frac)))
+
+        region = frame[y0:y0 + target_ch, x0:x0 + target_cw]
+        return cv2.resize(region, (panel_w, panel_h), interpolation=cv2.INTER_LINEAR)
 
     top = _panel(cx_left, cy_left)
     bottom = _panel(cx_right, cy_right)
     canvas = cv2.vconcat([top, bottom])
     return canvas
+
+
+# ── Visual Speaker Pop Filters ──────────────────────────────────────
+
+VIDEO_FILTER_SPECS: Dict[str, Dict[str, Any]] = {
+    "vivid_pop": {
+        "label": "Vivid Pop (Speaker Focus)",
+        "description": "Vibrant skin tones, rich contrast, facial micro-clarity, and spotlight vignette",
+    },
+    "warm_studio": {
+        "label": "Warm Studio",
+        "description": "Warm podcast lighting, golden skin tones, and gentle contrast",
+    },
+    "clean_crisp": {
+        "label": "Clean Crisp",
+        "description": "Ultra-sharp detail, natural colors, and neutral tone curve",
+    },
+    "cinematic": {
+        "label": "Cinematic Punch",
+        "description": "Moody deep blacks, high dynamic range, and dramatic vignette",
+    },
+    "none": {
+        "label": "None (Original)",
+        "description": "Raw unadjusted video footage",
+    },
+}
+
+_FILTER_LUTS: Dict[str, "np.ndarray"] = {}
+_SAT_LUTS: Dict[float, "np.ndarray"] = {}
+_VIGNETTE_MASKS: Dict[Tuple[int, int, int], "np.ndarray"] = {}
+
+def _get_filter_lut(contrast: float, brightness: float) -> "np.ndarray":
+    key = f"{contrast:.2f}_{brightness:.2f}"
+    if key not in _FILTER_LUTS:
+        import numpy as np
+        lut = np.clip((np.arange(256, dtype=np.float32) - 128.0) * contrast + 128.0 + brightness, 0, 255).astype(np.uint8)
+        _FILTER_LUTS[key] = lut
+    return _FILTER_LUTS[key]
+
+def _get_sat_lut(scale: float) -> "np.ndarray":
+    key = round(scale, 2)
+    if key not in _SAT_LUTS:
+        import numpy as np
+        lut = np.clip(np.arange(256, dtype=np.float32) * scale, 0, 255).astype(np.uint8)
+        _SAT_LUTS[key] = lut
+    return _SAT_LUTS[key]
+
+def _get_vignette_mask(h: int, w: int, intensity: float = 0.16) -> "np.ndarray":
+    key = (h, w, int(intensity * 100))
+    if key not in _VIGNETTE_MASKS:
+        import numpy as np
+        kernel_x = cv2.getGaussianKernel(w, w * 0.75)
+        kernel_y = cv2.getGaussianKernel(h, h * 0.75)
+        kernel = kernel_y * kernel_x.T
+        mask = kernel / (kernel.max() if kernel.max() > 0 else 1.0)
+        vignette_u8 = np.clip(((1.0 - intensity) + intensity * mask) * 255.0, 0, 255).astype(np.uint8)
+        _VIGNETTE_MASKS[key] = cv2.merge([vignette_u8, vignette_u8, vignette_u8])
+    return _VIGNETTE_MASKS[key]
+
+def apply_video_filter(frame: "np.ndarray", filter_name: Optional[str] = "vivid_pop") -> "np.ndarray":
+    """Enhance video speakers with contrast, skin tone vibrance, facial sharpening, and spotlight vignette.
+    Optimized for real-time OpenCV C++ execution with zero memory reallocation.
+    """
+    if not filter_name or filter_name == "none":
+        return frame
+
+    name = filter_name.lower().strip()
+
+    if name == "vivid_pop":
+        # S-curve contrast & slight brightness
+        lut = _get_filter_lut(contrast=1.10, brightness=2.0)
+        graded = cv2.LUT(frame, lut)
+        # Skin tone & color vibrance (+18%) via single-channel saturation LUT
+        hsv = cv2.cvtColor(graded, cv2.COLOR_BGR2HSV)
+        hsv[:, :, 1] = cv2.LUT(hsv[:, :, 1], _get_sat_lut(1.18))
+        graded = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+        # Facial micro-contrast / unsharp mask (+35%)
+        blurred = cv2.GaussianBlur(graded, (0, 0), 1.5)
+        sharpened = cv2.addWeighted(graded, 1.35, blurred, -0.35, 0)
+        # Spotlight vignette (-16%) via fast C++ multiply
+        vignette_3ch = _get_vignette_mask(frame.shape[0], frame.shape[1], intensity=0.16)
+        return cv2.multiply(sharpened, vignette_3ch, scale=1.0 / 255.0)
+
+    elif name == "warm_studio":
+        lut = _get_filter_lut(contrast=1.08, brightness=3.0)
+        graded = cv2.LUT(frame, lut)
+        # Warm tone shift: slight amber/red boost
+        graded[:, :, 2] = cv2.LUT(graded[:, :, 2], _get_sat_lut(1.04))
+        hsv = cv2.cvtColor(graded, cv2.COLOR_BGR2HSV)
+        hsv[:, :, 1] = cv2.LUT(hsv[:, :, 1], _get_sat_lut(1.14))
+        graded = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+        blurred = cv2.GaussianBlur(graded, (0, 0), 1.5)
+        sharpened = cv2.addWeighted(graded, 1.25, blurred, -0.25, 0)
+        vignette_3ch = _get_vignette_mask(frame.shape[0], frame.shape[1], intensity=0.14)
+        return cv2.multiply(sharpened, vignette_3ch, scale=1.0 / 255.0)
+
+    elif name == "clean_crisp":
+        lut = _get_filter_lut(contrast=1.06, brightness=1.0)
+        graded = cv2.LUT(frame, lut)
+        blurred = cv2.GaussianBlur(graded, (0, 0), 1.5)
+        return cv2.addWeighted(graded, 1.45, blurred, -0.45, 0)
+
+    elif name == "cinematic":
+        lut = _get_filter_lut(contrast=1.16, brightness=-2.0)
+        graded = cv2.LUT(frame, lut)
+        hsv = cv2.cvtColor(graded, cv2.COLOR_BGR2HSV)
+        hsv[:, :, 1] = cv2.LUT(hsv[:, :, 1], _get_sat_lut(1.10))
+        graded = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+        blurred = cv2.GaussianBlur(graded, (0, 0), 1.5)
+        sharpened = cv2.addWeighted(graded, 1.28, blurred, -0.28, 0)
+        vignette_3ch = _get_vignette_mask(frame.shape[0], frame.shape[1], intensity=0.22)
+        return cv2.multiply(sharpened, vignette_3ch, scale=1.0 / 255.0)
+
+    return frame
 
 
 # ── Decorations ─────────────────────────────────────────────────────
@@ -943,85 +1937,62 @@ def _draw_word_caption_cv(
     band_y1: int,
     style: Optional[Dict] = None,
 ) -> "np.ndarray":
-    """Dynamic word-by-word caption with a tight background box.
-
-    Renders a fixed block of MAX_CAPTION_WORDS words (a batch) at once —
-    the whole batch appears together, then the current word is highlighted
-    in the accent color (#ff914d) as the speaker goes through it one by
-    one. When the speaker passes the last word, the next batch of
-    MAX_CAPTION_WORDS replaces it.
-
-    The semi-transparent background is sized to the text block itself and
-    hugs it with a small padding (5px top/bottom) rather than spanning the
-    whole caption band. Text never exceeds 80% of the canvas width and
-    wraps onto up to two lines.
-    """
+    """Dynamic word-by-word caption with high-contrast outline and drop shadow."""
     words = [w for w in words if w]
     if not words:
         return canvas
     total = len(words)
     current_idx = max(0, min(current_idx, total - 1))
 
-    # Fixed batch: floor(current_idx / MAX_CAPTION_WORDS) * MAX_CAPTION_WORDS.
+    # Fixed burst: floor(current_idx / MAX_CAPTION_WORDS) * MAX_CAPTION_WORDS.
     batch_start = (current_idx // MAX_CAPTION_WORDS) * MAX_CAPTION_WORDS
     window = words[batch_start:batch_start + MAX_CAPTION_WORDS]
 
     font = cv2.FONT_HERSHEY_TRIPLEX
     base_scale = CAPTION_FONT_SCALE
     thick = CAPTION_FONT_THICK
-    base_bgr = tuple(reversed(_parse_hex((style or {}).get("color"))))
-    white = base_bgr
-    accent = CAPTION_ACCENT
+    white = (255, 255, 255)  # Inactive words are always pure white
 
-    # Build wrapped lines that fit within MAX_CAPTION_W.
-    lines: List[List[str]] = [[]]
-    line_w = 0.0
-    space_w = cv2.getTextSize(" ", font, base_scale, thick)[0][0]
-    for w in window:
-        ww = cv2.getTextSize(w, font, base_scale, thick)[0][0]
-        if lines[-1] and line_w + ww > MAX_CAPTION_W:
-            lines.append([])
-            line_w = 0.0
-        lines[-1].append(w)
-        line_w += ww + space_w
+    custom_color = (style or {}).get("color")
+    if custom_color and custom_color.strip().upper() not in ("#FFFFFF", "#FFF", "WHITE"):
+        accent = tuple(reversed(_parse_hex(custom_color)))
+    else:
+        accent = (0, 234, 255)  # Electric Yellow in BGR
 
-    # Measure the tight background box around the text block.
-    line_h = 0
-    block_w = 0
-    for line in lines:
-        full = " ".join(line)
-        (tw, th), _ = cv2.getTextSize(full, font, base_scale, thick)
-        line_h = max(line_h, th)
-        block_w = max(block_w, tw)
-    pad_y = 5  # background hugs the text: only 5px top/bottom
-    pad_x = 20
-    block_h = line_h * len(lines) + 2 * pad_y
-    block_w = min(block_w + 2 * pad_x, CANVAS_W - 40)
+    disp_words = [w.upper() for w in window]
+    safe_cap_w = int(CANVAS_W * 0.80)
+    cur_base_scale = base_scale
+    while cur_base_scale > 0.8:
+        space_w = cv2.getTextSize(" ", font, cur_base_scale, thick)[0][0] + 8
+        total_w = sum(
+            cv2.getTextSize(w, font, cur_base_scale * 1.18 if (batch_start + i == current_idx) else cur_base_scale, thick)[0][0]
+            for i, w in enumerate(disp_words)
+        ) + max(0, len(disp_words) - 1) * space_w
+        if total_w <= safe_cap_w:
+            break
+        cur_base_scale -= 0.15
 
-    # Center the block horizontally; vertically center it within the band.
-    x0 = (CANVAS_W - block_w) // 2
-    y0 = band_y0 + (band_y1 - band_y0 - block_h) // 2
+    x0 = max(108, (CANVAS_W - total_w) // 2)
+    y0 = band_y0 + (band_y1 - band_y0) // 2 + 20
 
-    # Draw the tight semi-transparent black background.
-    overlay = np.full((block_h, block_w, 3), 0, dtype=np.uint8)
-    roi = canvas[y0:y0 + block_h, x0:x0 + block_w]
-    cv2.addWeighted(roi, 0.55, overlay, 0.45, 0, roi)
-
-    # Draw words on top of the background box.
-    start_y = y0 + pad_y + line_h
+    cur_x = x0
     word_idx = batch_start
-    for line in lines:
-        full = " ".join(line)
-        (tw, _), _ = cv2.getTextSize(full, font, base_scale, thick)
-        x = x0 + (block_w - tw) // 2
-        for w in line:
-            is_current = word_idx == current_idx
-            color = accent if is_current else white
-            cv2.putText(canvas, w, (x, start_y), font, base_scale, color, thick, cv2.LINE_AA)
-            ww = cv2.getTextSize(w, font, base_scale, thick)[0][0]
-            x += ww + space_w
-            word_idx += 1
-        start_y += line_h
+    for w in disp_words:
+        is_current = (word_idx == current_idx)
+        color = accent if is_current else white
+        cur_scale = cur_base_scale * 1.18 if is_current else cur_base_scale
+        cur_thick = thick + (1 if is_current else 0)
+        ww = cv2.getTextSize(w, font, cur_scale, cur_thick)[0][0]
+
+        # 1. Shadow
+        cv2.putText(canvas, w, (cur_x + 4, y0 + 5), font, cur_scale, (0, 0, 0), cur_thick + 8, cv2.LINE_AA)
+        # 2. Outer stroke
+        cv2.putText(canvas, w, (cur_x, y0), font, cur_scale, (0, 0, 0), cur_thick + 6, cv2.LINE_AA)
+        # 3. Main text fill
+        cv2.putText(canvas, w, (cur_x, y0), font, cur_scale, color, cur_thick, cv2.LINE_AA)
+
+        cur_x += ww + space_w
+        word_idx += 1
     return canvas
 
 
@@ -1051,32 +2022,132 @@ def _draw_word_caption(
     if _HAS_PIL:
         rgba = _word_block_rgba(window, batch_start, current_idx, style)
         block_h, block_w = rgba.shape[:2]
-        x0 = max((CANVAS_W - block_w) // 2, 20)
+        x0 = max(108, (CANVAS_W - block_w) // 2)
         y0 = band_y0 + (band_y1 - band_y0 - block_h) // 2
         return _composite_rgba(canvas, rgba, x0, y0)
     return _draw_word_caption_cv(canvas, words, current_idx, band_y0, band_y1, style)
 
 
-def _draw_hook_title(canvas: "np.ndarray", title: str) -> "np.ndarray":
-    """Draw the hook headline inside the top safe zone (y ~150px)."""
-    if not title:
+def _draw_hook_card(
+    canvas: "np.ndarray",
+    title: str,
+    time: float = 0.0,
+    style: Optional[Dict] = None,
+) -> "np.ndarray":
+    """Agency-grade Opening Hook Card (first 2.5 seconds of clip).
+
+    Renders a bold, high-contrast headline pill badge in the upper third
+    safe zone (above the speaker's face and kinetic captions). Smoothly
+    fades out between 2.0s and 2.5s.
+    """
+    if not title or time > 2.5:
         return canvas
-    font = cv2.FONT_HERSHEY_DUPLEX
+
+    if time <= 2.0:
+        fade = 1.0
+    else:
+        fade = max(0.0, min(1.0, (2.5 - time) / 0.5))
+
+    if fade <= 0.01:
+        return canvas
+
+    clean_title = title.strip().upper()
+    # If title is excessively long, truncate gracefully with ellipsis
+    if len(clean_title) > 45:
+        words = clean_title.split()
+        shortened = []
+        cur_len = 0
+        for w in words:
+            if cur_len + len(w) + 1 > 42:
+                break
+            shortened.append(w)
+            cur_len += len(w) + 1
+        clean_title = " ".join(shortened) + "..."
+
+    if _HAS_PIL:
+        try:
+            font_size = 44
+            font_token = (style or {}).get("font") or "impact"
+            font = _resolve_font(font_token, font_size)
+
+            probe_img = Image.new("RGBA", (1, 1))
+            probe_draw = ImageDraw.Draw(probe_img)
+            tw = probe_draw.textlength(clean_title, font=font)
+
+            max_w = CANVAS_W - 140
+            if tw > max_w:
+                font_size = max(26, int(font_size * (max_w / tw)))
+                font = _resolve_font(font_token, font_size)
+                tw = probe_draw.textlength(clean_title, font=font)
+
+            pad_x = 34
+            pad_y = 16
+            badge_w = int(tw) + 2 * pad_x
+            badge_h = font_size + 2 * pad_y + 6
+
+            badge = Image.new("RGBA", (badge_w + 30, badge_h + 30), (0, 0, 0, 0))
+            d = ImageDraw.Draw(badge)
+
+            # 1. Floating drop shadow
+            d.rounded_rectangle(
+                [10, 14, 10 + badge_w, 14 + badge_h],
+                radius=18,
+                fill=(0, 0, 0, int(150 * fade)),
+            )
+
+            # 2. Obsidian glass pill background with Electric Yellow accent border
+            d.rounded_rectangle(
+                [10, 10, 10 + badge_w, 10 + badge_h],
+                radius=18,
+                fill=(14, 16, 20, int(230 * fade)),
+                outline=(255, 234, 0, int(240 * fade)),
+                width=3,
+            )
+
+            # 3. Clean headline typography with drop shadow
+            tx = 10 + pad_x
+            ty = 10 + pad_y
+            d.text((tx + 2, ty + 2), clean_title, font=font, fill=(0, 0, 0, int(220 * fade)))
+            d.text((tx, ty), clean_title, font=font, fill=(255, 255, 255, int(255 * fade)))
+
+            arr = np.array(badge)
+            bx = (CANVAS_W - arr.shape[1]) // 2
+            by = 220  # Upper third safe zone
+            return _composite_rgba(canvas, arr, bx, by)
+        except Exception:
+            pass
+
+    # OpenCV fallback
     scale = 1.0
     thick = 2
-    (tw, th), _ = cv2.getTextSize(title, font, scale, thick)
-    while tw > MAX_CAPTION_W and scale > 0.5:
+    font = cv2.FONT_HERSHEY_DUPLEX
+    (tw, th), _ = cv2.getTextSize(clean_title, font, scale, thick)
+    while tw > CANVAS_W - 140 and scale > 0.5:
         scale -= 0.05
-        (tw, th), _ = cv2.getTextSize(title, font, scale, thick)
-    x = (CANVAS_W - tw) // 2
-    y = TOP_SAFE_H // 2 + th // 2
-    cv2.putText(canvas, title, (x, y), font, scale, (255, 255, 255), thick, cv2.LINE_AA)
-    return canvas
+        (tw, th), _ = cv2.getTextSize(clean_title, font, scale, thick)
+
+    pad_x, pad_y = 25, 15
+    bx0 = (CANVAS_W - tw) // 2 - pad_x
+    by0 = 220
+    bx1 = bx0 + tw + 2 * pad_x
+    by1 = by0 + th + 2 * pad_y
+
+    overlay = canvas.copy()
+    cv2.rectangle(overlay, (bx0, by0), (bx1, by1), (14, 16, 20), -1)
+    cv2.rectangle(overlay, (bx0, by0), (bx1, by1), (0, 234, 255), 2)  # BGR electric yellow
+    cv2.putText(overlay, clean_title, (bx0 + pad_x, by0 + pad_y + th), font, scale, (255, 255, 255), thick, cv2.LINE_AA)
+    return cv2.addWeighted(overlay, fade, canvas, 1.0 - fade, 0)
 
 
-def _draw_divider(canvas: "np.ndarray", layout_type: str) -> "np.ndarray":
+def _draw_hook_title(canvas: "np.ndarray", title: str) -> "np.ndarray":
+    """Backward-compatible wrapper for hook headline at time=0.0."""
+    return _draw_hook_card(canvas, title, time=0.0)
+
+
+
+def _draw_divider(canvas: "np.ndarray", layout_type: str, is_solo: bool = False) -> "np.ndarray":
     """2px accent divider line for the podcast split at y ~960px."""
-    if layout_type != "split_vertical":
+    if layout_type != "split_vertical" or is_solo:
         return canvas
     y = CANVAS_H // 2  # 960
     cv2.line(canvas, (0, y - 1), (CANVAS_W, y - 1), (200, 200, 200), 2)
@@ -1138,6 +2209,7 @@ def _decorate_frame(
     segments: Optional[List[Dict]] = None,
     style: Optional[Dict] = None,
     branding: Optional[Dict] = None,
+    is_solo: bool = False,
 ) -> "np.ndarray":
     """Apply canvas-safe zones, word-by-word captions, hook title, divider,
     color overlay, and widgets to a 1080x1920 frame.
@@ -1149,6 +2221,7 @@ def _decorate_frame(
     """
     out = frame
     layout_type = spec.get("layout", {}).get("type", "single_focus")
+    effective_layout = "single_focus" if is_solo else layout_type
     typo = spec.get("typography") or {}
 
     # Color overlay
@@ -1159,19 +2232,32 @@ def _decorate_frame(
         tint = np.full_like(out, [b, g, r], dtype=np.uint8)
         out = cv2.addWeighted(out, 1.0 - alpha, tint, alpha, 0)
 
-    # Divider line (podcast split)
-    out = _draw_divider(out, layout_type)
+    # Divider line (podcast split) - only shown when in split mode
+    out = _draw_divider(out, layout_type, is_solo=is_solo)
 
-    # Hook title in the top safe zone (stage layout)
-    title = typo.get("title", "")
-    if layout_type == "single_focus" and title:
-        out = _draw_hook_title(out, title)
+    # Agency Visual Hook Card (first 2.5 seconds of the clip across all layouts)
+    hook_enabled = True
+    if style and "hook_card" in style:
+        hook_enabled = bool(style["hook_card"])
+    elif "hook_card" in spec:
+        hook_enabled = bool(spec["hook_card"])
+
+    if hook_enabled and time <= 2.5:
+        title = typo.get("title", "") or spec.get("title", "")
+        if not title and segments:
+            first_text = (segments[0].get("text") or "").strip()
+            if first_text:
+                first_sent = re.split(r"[.!?\n]", first_text)[0].strip()
+                words = first_sent.split()
+                title = " ".join(words[:7]) if len(words) > 7 else first_sent
+        if title:
+            out = _draw_hook_card(out, title, time=time, style=style)
 
     # Word-by-word captions (real transcript segments when available)
     text = typo.get("text", "")
     pos = style.get("position") if style else None
+    band_y0, band_y1 = _band_for_position(pos, layout_type, is_solo=is_solo)
     if segments:
-        band_y0, band_y1 = _band_for_position(pos, layout_type)
         seg = _active_segment(segments, time)
         if seg is not None:
             seg_words = seg.get("words") or []
@@ -1190,13 +2276,6 @@ def _decorate_frame(
                 current_idx = min(shown - 1, len(words) - 1)
             out = _draw_word_caption(out, words, current_idx, band_y0, band_y1, style)
     elif text:
-        if layout_type == "split_vertical":
-            if pos == "lower_third":
-                band_y0, band_y1 = 1500, 1700          # Option B: lower-third
-            else:
-                band_y0, band_y1 = 860, 1060           # Option A: center divider
-        else:
-            band_y0, band_y1 = _band_for_position(pos, layout_type)
         words = text.split()
         shown = max(1, int(progress * len(words))) if words else 0
         current_idx = min(shown - 1, len(words) - 1)
@@ -1265,8 +2344,14 @@ def _reframe_composed(
     face_cascade = cv2.CascadeClassifier(
         cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
     )
+    profile_cascade = cv2.CascadeClassifier(
+        cv2.data.haarcascades + "haarcascade_profileface.xml"
+    )
+    upperbody_cascade = cv2.CascadeClassifier(
+        cv2.data.haarcascades + "haarcascade_upperbody.xml"
+    )
 
-    # ── Pass 1: pre-scan face trajectory ──
+    # ── Pass 1 & Pass 2: Discovery & Imperfection Audit ──
     auto_framing = spec.get("auto_framing", True)
     layout_type = spec.get("layout", {}).get("type", "single_focus")
     layout_spec = spec.get("layout", {})
@@ -1274,13 +2359,41 @@ def _reframe_composed(
     trajectory: Optional[List[Tuple[int, int]]] = None
     traj_left: Optional[List[Tuple[int, int]]] = None
     traj_right: Optional[List[Tuple[int, int]]] = None
+    solo_mask: Optional[List[bool]] = None
+    solo_traj: Optional[List[Tuple[int, int]]] = None
+    mouth_activity: Optional[List[Tuple[float, float, float]]] = None
+    cut_timestamps: Optional[List[float]] = None
+    adaptive_bust_scale = 0.82
     use_blur = False
     if auto_framing:
-        print("  [pre-scan] sampling face positions...", flush=True)
         if layout_type == "split_vertical":
-            traj_left, traj_right = _pre_scan_trajectory_pair(cap, src_w, src_h, total_frames, fps, face_cascade)
+            print("  [Pass 1/3: Discovery] Pre-scanning scene cuts, speaker clusters & active speech...", flush=True)
+            samples, raw_mouth, face_heights = _pre_scan_samples_pair(
+                cap, src_w, src_h, total_frames, fps,
+                face_cascade, profile_cascade, upperbody_cascade
+            )
+            print("  [Pass 2/3: Refinement] Auditing shot imperfections, healing dropouts & locking anchors...", flush=True)
+            (
+                traj_left,
+                traj_right,
+                solo_mask,
+                solo_traj,
+                mouth_activity,
+                adaptive_bust_scale,
+                cut_timestamps,
+            ) = _audit_and_refine_trajectory_pair(
+                samples, raw_mouth, face_heights, src_w, src_h, total_frames, fps, cap=cap
+            )
         else:
-            trajectory, use_blur = _pre_scan_trajectory(cap, src_w, src_h, total_frames, fps, face_cascade)
+            print("  [Pass 1/3: Discovery] Pre-scanning scene cuts and face tracking...", flush=True)
+            samples, union_widths = _pre_scan_samples_single(
+                cap, src_w, src_h, total_frames, fps,
+                face_cascade, profile_cascade, upperbody_cascade
+            )
+            print("  [Pass 2/3: Refinement] Auditing shots, clamping headroom & locking anchors...", flush=True)
+            trajectory, use_blur = _audit_and_refine_trajectory(
+                samples, union_widths, src_w, src_h, total_frames, fps, crop_w, cap=cap
+            )
         cap.release()
         cap = cv2.VideoCapture(temp_path)  # re-open for render pass
 
@@ -1293,12 +2406,39 @@ def _reframe_composed(
             typo["title"] = title
         spec["typography"] = typo
 
-    # ── Pass 2: render ──
+    # ── Pass 3: Final Render ──
+    print("  [Pass 3/3: Render] Compositing 1080x1920 short with safe-width kinetic captions...", flush=True)
     silent_path = out_path + ".silent.mp4"
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     out_w, out_h = CANVAS_W, CANVAS_H
 
     writer = cv2.VideoWriter(silent_path, fourcc, fps, (out_w, out_h))
+
+    # Pre-calculate dynamic solo cuts for podcast split screen
+    clip_duration = total_frames / fps if fps > 0 else 0.0
+    solo_switch_enabled = spec.get("solo_switch", True)
+    if style and "podcast_solo_switch" in style:
+        solo_switch_enabled = bool(style["podcast_solo_switch"])
+
+    bust_scale = float(spec.get("bust_scale", adaptive_bust_scale))
+    if style and "podcast_bust_scale" in style:
+        bust_scale = float(style["podcast_bust_scale"])
+
+    video_filter = spec.get("video_filter", "vivid_pop")
+    if style and "video_filter" in style:
+        video_filter = style["video_filter"]
+
+    solo_windows: List[Tuple[float, float, int]] = []
+    if layout_type == "split_vertical" and solo_switch_enabled:
+        solo_windows = _compute_podcast_solo_windows(
+            clip_duration,
+            segments=segments,
+            enabled=True,
+            mouth_activity=mouth_activity,
+            solo_mask=solo_mask,
+            fps=fps,
+            cut_timestamps=cut_timestamps,
+        )
 
     frame_idx = 0
     default_cx, default_cy = src_w // 2, src_h // 2
@@ -1308,36 +2448,100 @@ def _reframe_composed(
             break
         frame_idx += 1
 
-        if layout_type == "split_vertical":
-            if traj_left is not None and traj_right is not None:
-                cx_l, cy_l = traj_left[frame_idx - 1] if frame_idx - 1 < len(traj_left) else (default_cx, default_cy)
-                cx_r, cy_r = traj_right[frame_idx - 1] if frame_idx - 1 < len(traj_right) else (default_cx, default_cy)
-            else:
-                cx_l, cy_l = src_w // 4, src_h // 2
-                cx_r, cy_r = src_w * 3 // 4, src_h // 2
-            composed = _render_podcast_canvas(frame, src_w, src_h, cx_l, cy_l, cx_r, cy_r)
-        elif use_blur:
-            composed = _render_contain(frame, out_w, out_h, bg_style="blur")
-        elif trajectory is not None:
-            cx, cy = trajectory[frame_idx - 1] if frame_idx - 1 < len(trajectory) else (default_cx, default_cy)
-            composed = _render_stage_canvas(frame, src_w, src_h, cx, cy)
-        else:
-            composed = _render_stage_canvas(frame, src_w, src_h, default_cx, default_cy)
-
         pct = frame_idx / total_frames if total_frames > 0 else 0
         clip_time = frame_idx / fps if fps > 0 else 0.0
-        composed = _decorate_frame(composed, spec, frame_idx, total_frames, pct, time=clip_time, segments=segments, style=style, branding=branding)
+
+        zoom_enabled = spec.get("zoom_punch", True)
+        if style and "zoom_punch" in style:
+            zoom_enabled = bool(style["zoom_punch"])
+        zoom = _calculate_zoom_factor(clip_time, segments, enabled=zoom_enabled, zoom_scale=1.15)
+
+        is_solo = False
+        solo_spk = 0
+        if solo_windows:
+            for (w_start, w_end, spk) in solo_windows:
+                if w_start <= clip_time < w_end:
+                    is_solo = True
+                    solo_spk = spk
+                    break
+
+        if layout_type == "split_vertical":
+            shot_is_solo = (solo_mask is not None and frame_idx - 1 < len(solo_mask) and solo_mask[frame_idx - 1])
+            if shot_is_solo:
+                is_solo = True
+                s_cx, s_cy = solo_traj[frame_idx - 1] if (solo_traj and frame_idx - 1 < len(solo_traj)) else (default_cx, default_cy)
+                composed = _render_full_bleed_canvas(frame, src_w, src_h, s_cx, s_cy, zoom=zoom)
+            elif is_solo:
+                # Dynamic Full-Bleed 9:16 solo of the verified active speaking host
+                if traj_left is not None and traj_right is not None:
+                    cx_l, cy_l = traj_left[frame_idx - 1] if frame_idx - 1 < len(traj_left) else (default_cx, default_cy)
+                    cx_r, cy_r = traj_right[frame_idx - 1] if frame_idx - 1 < len(traj_right) else (default_cx, default_cy)
+                else:
+                    cx_l, cy_l = src_w // 4, src_h // 2
+                    cx_r, cy_r = src_w * 3 // 4, src_h // 2
+                solo_cx, solo_cy = (cx_l, cy_l) if solo_spk == 0 else (cx_r, cy_r)
+                half = "left" if solo_spk == 0 else "right"
+                composed = _render_full_bleed_canvas(frame, src_w, src_h, solo_cx, solo_cy, zoom=zoom, clamp_half=half)
+            else:
+                # Medium-Bust (chest-up) dual split screen with locked anchors
+                if traj_left is not None and traj_right is not None:
+                    cx_l, cy_l = traj_left[frame_idx - 1] if frame_idx - 1 < len(traj_left) else (default_cx, default_cy)
+                    cx_r, cy_r = traj_right[frame_idx - 1] if frame_idx - 1 < len(traj_right) else (default_cx, default_cy)
+                else:
+                    cx_l, cy_l = src_w // 4, src_h // 2
+                    cx_r, cy_r = src_w * 3 // 4, src_h // 2
+                composed = _render_podcast_canvas(frame, src_w, src_h, cx_l, cy_l, cx_r, cy_r, crop_scale=bust_scale)
+        elif layout_type == "blurred_backdrop" or use_blur:
+            composed = _render_blurred_backdrop_canvas(frame, src_w, src_h, default_cx, default_cy, zoom=zoom)
+        elif layout_type == "single_focus":
+            cx, cy = trajectory[frame_idx - 1] if frame_idx - 1 < len(trajectory) else (default_cx, default_cy)
+            composed = _render_stage_canvas(frame, src_w, src_h, cx, cy, zoom=zoom)
+        else:
+            if trajectory is not None:
+                cx, cy = trajectory[frame_idx - 1] if frame_idx - 1 < len(trajectory) else (default_cx, default_cy)
+            else:
+                cx, cy = default_cx, default_cy
+            composed = _render_full_bleed_canvas(frame, src_w, src_h, cx, cy, zoom=zoom)
+
+        # Apply visual enhancement filter (Vivid Pop, Warm Studio, Clean Crisp, etc.)
+        if video_filter and video_filter != "none":
+            composed = apply_video_filter(composed, video_filter)
+
+        composed = _decorate_frame(
+            composed,
+            spec,
+            frame_idx,
+            total_frames,
+            pct,
+            time=clip_time,
+            segments=segments,
+            style=style,
+            branding=branding,
+            is_solo=is_solo,
+        )
         writer.write(composed)
 
-        if progress is not None and (frame_idx % 30 == 0 or total_frames == 0):
-            progress.update(frame_idx)
+        if progress is not None:
+            if getattr(progress, "is_cancelled", False) or (callable(getattr(progress, "check_cancelled", None)) and progress.check_cancelled()):
+                cap.release()
+                writer.release()
+                if os.path.exists(silent_path):
+                    try:
+                        os.remove(silent_path)
+                    except Exception:
+                        pass
+                _cleanup_temp(temp_path, orig_path)
+                raise InterruptedError("Render cancelled by user.")
+            if (frame_idx % 30 == 0 or total_frames == 0) and hasattr(progress, "update"):
+                progress.update(frame_idx)
 
     cap.release()
     writer.release()
     del cap, writer
     gc.collect()
 
-    _mux_audio(silent_path, out_path, source_path, start_time, end_time, in_path)
+    master_audio = bool(style.get("master_audio", True)) if style else True
+    _mux_audio(silent_path, out_path, source_path, start_time, end_time, in_path, master_audio=master_audio)
     os.remove(silent_path)
     _cleanup_temp(temp_path, orig_path)
     return out_path

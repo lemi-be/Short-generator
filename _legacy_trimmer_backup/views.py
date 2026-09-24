@@ -145,7 +145,7 @@ def download(request):
             return redirect("home")
         try:
             from shorts_generator.local.downloader import download_youtube_local
-            download_youtube_local(url, fmt="720")
+            download_youtube_local(url, fmt="1080")
         except Exception as e:
             return render(request, "webui/home.html", {
                 "videos": _get_source_videos(),

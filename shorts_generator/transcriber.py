@@ -110,5 +110,9 @@ def transcribe(media_url: str, language: Optional[str] = None) -> Dict:
         segments.append(seg)
 
     duration = float(verbose.get("duration") or (segments[-1]["end"] if segments else 0.0))
+    from .segmenter import resegment_by_sentences
+    sentence_segments = resegment_by_sentences(segments)
+    if sentence_segments:
+        segments = sentence_segments
     print(f"[transcribe] {len(segments)} segments, {duration:.0f}s of audio", flush=True)
     return {"duration": duration, "segments": segments}
