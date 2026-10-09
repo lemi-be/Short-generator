@@ -142,3 +142,124 @@ python manage.py test webui
 
 - **`README.md`**: Rewritten as the unified, comprehensive documentation guide for the project. Covers the 7-stage production workflow, core engine capabilities, template layouts, subtitle styles, broadcast audio mastering, installation, `.env` configuration, Web UI usage, CLI automation, and testing.
 - **Obsolete Documentation Removed**: Removed 6 draft/historical markdown files (`Update.md`, `update2.md`, `Updated_System_Plan.md`, `newTemp.md`, `SYSTEM_DOCUMENTATION.md`, and the `remake_document/` folder).
+
+---
+
+## 8. Production Workflow Reliability Hardening (`fix/production-workflow-reliability`)
+
+On branch `fix/production-workflow-reliability`, comprehensive audits and fixes were executed addressing workflow reliability, security, and integrity across the application.
+
+### 8.1 CSRF Security
+- **Audit & Removal**: Audited every view in `webui/views.py`. Removed `@csrf_exempt` from all 10 browser state-changing endpoints:
+  - `project_new`
+  - `project_detail`
+  - `episode_add`
+  - `clip_add`
+  - `clip_delete`
+  - `episode_render`
+  - `render_cancel`
+  - `clip_confirm`
+  - `clip_trim`
+  - `episode_package`
+- **Template & AJAX Hardening**:
+  - Embedded `{% csrf_token %}` across all forms and template surfaces (`episode_mark.html`, `project_new.html`, `project_detail.html`, `episode_review.html`, `episode_deliver.html`).
+  - Added `@ensure_csrf_cookie` to GET views (`episode_mark`, `episode_review`, `episode_deliver`) ensuring CSRF cookies are set on initial page visits.
+  - Implemented `getCsrfToken()` helper in client-side JavaScript falling back to DOM `[name=csrfmiddlewaretoken]` to guarantee that all asynchronous `fetch` calls transmit the `X-CSRFToken` header.
+- **Verification**: `CSRFSecurityTests` confirms that all POST endpoints reject unauthenticated requests with HTTP 403 Forbidden when enforced, and accept valid requests with token.
+
+### 8.2 Delivery Integrity
+- **Verification of Renders & Approvals**:
+  - Implemented `validate_episode_delivery(episode)` and `check_clip_render_status(episode, clip, idx)` in `webui/views.py` and `webui/jobs.py`.
+  - Packaging now strictly requires:
+    1. Every clip in the episode must have confirmed approval (`clip.confirmed=True`).
+    2. Every clip must have an existing, non-empty rendered MP4 file (`stat().st_size > 0`).
+    3. Every clip must have a valid sidecar metadata file (`.meta.json`) matching the clip's current `source_start` and `source_end` timestamps and `caption_override`.
+  - Rejects incomplete, corrupted, or stale renders with actionable explanations.
+  - Disables the delivery packaging button and displays a detailed pending requirement list in `episode_deliver.html` if any clip is unapproved or render is stale/missing.
+  - Marks `episode.delivered=True` **only** after files are validated, copied to the delivery folder, and the batch ZIP archive is successfully constructed on disk.
+  - Modifying or deleting clips (`clip_trim`, `clip_add`, `clip_delete`) immediately resets `episode.delivered=False`.
+
+### 8.3 Clip Edit Correctness
+- **Approval Invalidation**:
+  - In `clip_trim`: modifying clip in/out boundaries or caption override automatically invalidates approval by setting `clip.confirmed=False`.
+- **Settings Isolation**:
+  - Eliminated silent mutations to `ClientProject` defaults (`default_template`, `caption_template`, `video_filter`) in `clip_trim`.
+  - Per-clip render overrides are passed directly to `render_one_clip` and stored in the individual clip's `.meta.json` sidecar without altering database project settings.
+- **Timestamp Validation & Visible Errors**:
+  - Probes source video duration via `_get_source_duration(episode)` using ffprobe or transcript caches.
+  - Rejects negative start times (`start < 0`), inverted ranges (`end <= start`), non-numeric inputs, and ranges exceeding source video duration (`end > duration`).
+  - Returns visible redirect error messages in `clip_trim` and HTTP 400 with descriptive error JSON in `clip_add`. Error banners are rendered in `episode_review.html` and `episode_mark.html`.
+
+### 8.4 Render-Job Recovery
+- **Interrupted Job Detection**:
+  - Implemented in-memory active thread tracking (`_RUNNING_JOBS`, `register_running_job`, `unregister_running_job`) in `webui/jobs.py`.
+  - Implemented `recover_interrupted_jobs(episode)`: detects any queued or rendering jobs whose background thread was abandoned due to an application restart or process termination.
+  - Automatically transitions abandoned jobs to `status="failed"` with message `"Interrupted: server was restarted while render was in progress"` and finished timestamp.
+  - Connected startup hook in `webui/apps.py` via `request_started` and lazy evaluation on view state calls (`_episode_state`, `episode_mark`, `episode_render`, `render_status`).
+- **Safe Retry & Incomplete File Cleanup**:
+  - Automatically unblocks re-rendering so users can retry without getting stuck on frozen progress.
+  - Incomplete or corrupted output files missing matching `.meta.json` sidecars are purged during recovery and excluded from `_rendered_shorts` and `_review_clips`.
+
+### 8.5 Test Evidence & Verification Matrix
+
+#### Commands Executed
+1. **Django System Checks**:
+   ```powershell
+   python manage.py check
+   ```
+   **Output**: `System check identified no issues (0 silenced).` (Exit code: 0)
+
+2. **Full Automated Test Suite**:
+   ```powershell
+   python manage.py test
+   ```
+   **Output**:
+   ```text
+   Creating test database for alias 'default'...
+   ......................................
+   ----------------------------------------------------------------------
+   Ran 38 tests in 0.629s
+
+   OK
+   Destroying test database for alias 'default'...
+   Found 38 test(s).
+   System check identified no issues (0 silenced).
+   ```
+
+#### Regression Coverage Matrix (38 Passed Tests)
+| Test Class | Test Case | Verified Behavior |
+|---|---|---|
+| `CSRFSecurityTests` | `test_csrf_rejection_without_token` | Rejection (403) across all 9 POST endpoints without CSRF token |
+| `CSRFSecurityTests` | `test_csrf_accepted_with_valid_token` | Successful acceptance of POST request with valid CSRF cookie & header |
+| `DeliveryIntegrityTests` | `test_delivery_rejected_when_no_clips` | Prevents delivery packaging when no clips exist |
+| `DeliveryIntegrityTests` | `test_delivery_rejected_with_unapproved_clips` | Blocks packaging and displays error if clips lack confirmation |
+| `DeliveryIntegrityTests` | `test_delivery_rejected_with_missing_renders` | Blocks packaging if MP4 files do not exist on disk |
+| `DeliveryIntegrityTests` | `test_delivery_rejected_with_stale_timestamp_render` | Blocks packaging if clip start/end timestamps diverge from `.meta.json` |
+| `DeliveryIntegrityTests` | `test_delivery_rejected_with_stale_caption_render` | Blocks packaging if clip caption override diverges from `.meta.json` |
+| `DeliveryIntegrityTests` | `test_delivery_successful_packaging` | Full delivery packaging into ZIP and setting `delivered=True` |
+| `ClipEditCorrectnessTests` | `test_clip_edit_invalidates_approval_and_delivery` | Invalidation of `clip.confirmed` and `episode.delivered` on edit |
+| `ClipEditCorrectnessTests` | `test_settings_isolation_does_not_modify_project_defaults` | Per-clip overrides isolated from `ClientProject` database defaults |
+| `ClipEditCorrectnessTests` | `test_invalid_timestamps_rejected_with_error` | Visible error feedback for negative, inverted, or out-of-bounds timestamps |
+| `ClipEditCorrectnessTests` | `test_clip_add_invalid_timestamps` | HTTP 400 error response on invalid timestamp submission in `clip_add` |
+| `RenderJobRecoveryTests` | `test_abandoned_job_marked_interrupted_on_recovery` | Recovery marks orphaned queued/running jobs as failed with restart message |
+| `RenderJobRecoveryTests` | `test_safe_retry_after_interrupted_job` | Safe retry allowed without blocking on zombie jobs |
+| `RenderJobRecoveryTests` | `test_incomplete_output_files_cleaned_up_on_recovery` | Cleanup of partial renders without valid `.meta.json` sidecars |
+| `WebViewsTests` | `test_render_status_empty_and_active` | Render status API properly reflects registered running jobs |
+| `WebViewsTests` | `test_clip_add_and_delete` | Clip creation and deletion AJAX lifecycle |
+| `WebViewsTests` | `test_project_new_get_and_post` | Project creation and default inheritance |
+| `WebViewsTests` | `test_project_detail_view` | Project detail rendering with episode lists |
+| `ModelTests` | `test_client_project_slugify_and_defaults` | Slug generation and model defaults |
+| `ModelTests` | `test_client_project_slug_deduplication` | Slug collision resolution with numeric suffix |
+| `ModelTests` | `test_episode_and_clip_models` | Episode & Clip relational constraints and properties |
+| `ModelTests` | `test_render_job_and_cancellation` | RenderJob cancellation tokens |
+| `SegmenterTests` | `test_is_sentence_end`, `test_extract_words`, `test_resegment_by_sentences` | NLP sentence segmentation and word timing |
+| `DownloaderTests` | `test_format_for`, `test_extract_youtube_video_id`, `test_resolve_local_path` | Downloader path and URL parsing |
+| `ClipperTests` | `test_ratio`, `test_band_for_position`, `test_apply_video_filter` | Aspect ratio, subtitle positioning, filter matrix processing |
+| `PipelineAndHighlightsTests` | `test_pipeline_mode_validation`, `test_dedupe_highlights_overlap`, `test_sanitize_highlights_bounds` | Pipeline local validation and highlight filtering |
+
+### 8.6 Cases Not Verified Locally
+1. **Live YouTube Video Download Under Real YouTube Anti-Bot Challenges**:
+   - Automated test suite tests downloader format resolution, URL extraction, and local paths. Live YouTube downloading via `yt-dlp` requires external internet access and real YouTube IP authentication or exported cookies (`export_cookies.py`).
+2. **GPU Hardware NVENC Transcoding**:
+   - Tests execute using CPU and simulated software video containers. Production runs with NVIDIA GPU NVENC acceleration depend on the host machine's physical GPU driver availability.
+

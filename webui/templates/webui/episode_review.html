@@ -22,6 +22,7 @@
   </div>
 </div>
 
+{% if error %}<div class="msg-error">{{ error }}</div>{% endif %}
 {% if msg %}<div class="msg-success">{{ msg }}</div>{% endif %}
 
 <div class="flex" style="margin-bottom:.75rem">
@@ -164,7 +165,10 @@ function applyTrim() {
   const template = document.getElementById('template-select').value;
   const caption_template = document.getElementById('caption-template-select').value;
   const video_filter = document.getElementById('video-filter-select') ? document.getElementById('video-filter-select').value : 'vivid_pop';
-  if (!isFinite(start) || !isFinite(end) || end <= start) return;
+  if (!isFinite(start) || !isFinite(end) || end <= start) {
+    alert("Invalid in/out points: end must be greater than start.");
+    return;
+  }
   const body = new URLSearchParams({ start, end, caption, template, caption_template, video_filter });
   const btn = document.getElementById('btn-rerender');
   const status = document.getElementById('rerender-status');
@@ -172,13 +176,24 @@ function applyTrim() {
   if (status) { status.innerText = "Re-rendering with agency engine... please wait."; }
   fetch("{% url 'clip_trim' episode.pk current.clip.pk %}", {
     method: 'POST', body,
-    headers: { 'X-CSRFToken': getCookie('csrftoken') }
-  }).then(() => location.reload());
+    headers: { 'X-CSRFToken': getCsrfToken() }
+  }).then(res => {
+    if (res.redirected) {
+      window.location.href = res.url;
+    } else {
+      location.reload();
+    }
+  }).catch(err => {
+    if (btn) { btn.disabled = false; btn.innerText = "⚡ Re-render Clip"; }
+    if (status) { status.innerText = "Re-render error: " + err; }
+  });
 }
 
-function getCookie(name) {
-  const m = document.cookie.match(new RegExp('(^|; )' + name + '=([^;]*)'));
-  return m ? decodeURIComponent(m[2]) : null;
+function getCsrfToken() {
+  const m = document.cookie.match(new RegExp('(^|; )csrftoken=([^;]*)'));
+  if (m) return decodeURIComponent(m[2]);
+  const input = document.querySelector('[name=csrfmiddlewaretoken]');
+  return input ? input.value : '';
 }
 </script>
 {% endblock %}
