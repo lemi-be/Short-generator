@@ -1,13 +1,23 @@
-"""Unit tests for Short Factory (webui and core pipeline)."""
 import json
-import numpy as np
+import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
-from django.test import Client, TestCase
+import numpy as np
+from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 
 from webui.models import ClientProject, Episode, Clip, RenderJob, slugify
-from webui.jobs import cancel_job_in_memory, is_job_cancelled, JobCancellationToken
+from webui.jobs import (
+    cancel_job_in_memory,
+    is_job_cancelled,
+    JobCancellationToken,
+    register_running_job,
+    unregister_running_job,
+    recover_interrupted_jobs,
+    is_valid_clip_render,
+)
+from webui.views import _short_name
 from shorts_generator.segmenter import is_sentence_end, extract_words, resegment_by_sentences
 from shorts_generator.local.downloader import _format_for, _extract_youtube_video_id, _resolve_local_path
 from shorts_generator.local.clipper import (
@@ -239,11 +249,15 @@ class WebViewsTests(TestCase):
         self.assertEqual(data["status"], "none")
 
         job = RenderJob.objects.create(episode=self.episode, progress=45, status=RenderJob.STATUS_RENDERING)
-        response = self.client.get(status_url)
-        self.assertEqual(response.status_code, 200)
-        data = response.json()
-        self.assertEqual(data["status"], RenderJob.STATUS_RENDERING)
-        self.assertEqual(data["progress"], 45)
+        register_running_job(job.pk)
+        try:
+            response = self.client.get(status_url)
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            self.assertEqual(data["status"], RenderJob.STATUS_RENDERING)
+            self.assertEqual(data["progress"], 45)
+        finally:
+            unregister_running_job(job.pk)
 
     def test_episode_mark_view(self):
         response = self.client.get(reverse("episode_mark", args=[self.episode.pk]))
@@ -285,3 +299,324 @@ class PipelineAndHighlightsTests(TestCase):
         # Check that "Too long" was clamped to max 60s
         long_clip = next(c for c in sanitized if c["title"] == "Too long")
         self.assertAlmostEqual(long_clip["end_time"] - long_clip["start_time"], 60.0)
+
+
+class CSRFSecurityTests(TestCase):
+    def setUp(self):
+        self.csrf_client = Client(enforce_csrf_checks=True)
+        self.project = ClientProject.objects.create(name="CSRF Test Project")
+        self.episode = Episode.objects.create(project=self.project, video_id="csrf123")
+        self.clip = Clip.objects.create(episode=self.episode, start_time=1.0, end_time=10.0)
+
+    def test_csrf_rejection_without_token(self):
+        """All browser state-changing endpoints must reject requests without a CSRF token with 403."""
+        endpoints = [
+            (reverse("project_new"), {"name": "Malicious Project"}),
+            (reverse("project_detail", args=[self.project.pk]), {"action": "update_settings"}),
+            (reverse("clip_add", args=[self.episode.pk]), {"start": "1.0", "end": "5.0"}),
+            (reverse("clip_delete", args=[self.episode.pk, self.clip.pk]), {}),
+            (reverse("episode_render", args=[self.episode.pk]), {}),
+            (reverse("render_cancel", args=[self.episode.pk]), {}),
+            (reverse("clip_confirm", args=[self.episode.pk, self.clip.pk]), {}),
+            (reverse("clip_trim", args=[self.episode.pk, self.clip.pk]), {"start": "2.0", "end": "8.0"}),
+            (reverse("episode_package", args=[self.episode.pk]), {}),
+        ]
+        for url, data in endpoints:
+            with self.subTest(url=url):
+                res = self.csrf_client.post(url, data)
+                self.assertEqual(res.status_code, 403, f"Expected 403 on {url} without CSRF token, got {res.status_code}")
+
+    def test_csrf_accepted_with_valid_token(self):
+        """State-changing requests with valid CSRF tokens must be accepted."""
+        get_res = self.csrf_client.get(reverse("episode_mark", args=[self.episode.pk]))
+        self.assertEqual(get_res.status_code, 200)
+        self.assertIn("csrftoken", get_res.cookies)
+        token = get_res.cookies["csrftoken"].value
+
+        add_res = self.csrf_client.post(
+            reverse("clip_add", args=[self.episode.pk]),
+            {"start": "12.0", "end": "22.0"},
+            headers={"x-csrftoken": token},
+        )
+        self.assertEqual(add_res.status_code, 200)
+        self.assertTrue(add_res.json().get("ok"))
+
+
+class DeliveryIntegrityTests(TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.output_dir = Path(self.temp_dir.name)
+        self.project = ClientProject.objects.create(name="Delivery Test Brand")
+        self.episode = Episode.objects.create(
+            project=self.project,
+            video_id="delivery_vid",
+            source_file=str(self.output_dir / "source_delivery_vid.mp4"),
+        )
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_delivery_rejected_when_no_clips(self):
+        with override_settings(OUTPUT_DIR=self.output_dir):
+            res = self.client.post(reverse("episode_package", args=[self.episode.pk]))
+            self.assertEqual(res.status_code, 302)
+            self.assertIn("error=", res.url)
+            self.episode.refresh_from_db()
+            self.assertFalse(self.episode.delivered)
+
+    def test_delivery_rejected_with_unapproved_clips(self):
+        with override_settings(OUTPUT_DIR=self.output_dir):
+            clip = Clip.objects.create(episode=self.episode, start_time=5.0, end_time=15.0, confirmed=False)
+            name = _short_name(self.episode, 1)
+            mp4_file = self.output_dir / name
+            mp4_file.write_bytes(b"\x00\x00\x00\x18ftypmp42fake-video-content")
+            meta_file = self.output_dir / f"{mp4_file.stem}.meta.json"
+            meta_file.write_text(json.dumps({
+                "clip_id": clip.pk,
+                "source_start": 5.0,
+                "source_end": 15.0,
+                "caption_override": "",
+                "status": "complete",
+            }), encoding="utf-8")
+
+            res = self.client.post(reverse("episode_package", args=[self.episode.pk]))
+            self.assertEqual(res.status_code, 302)
+            self.assertIn("error=", res.url)
+            self.assertTrue("not%20approved" in res.url or "not+approved" in res.url)
+            self.episode.refresh_from_db()
+            self.assertFalse(self.episode.delivered)
+
+    def test_delivery_rejected_with_missing_renders(self):
+        with override_settings(OUTPUT_DIR=self.output_dir):
+            Clip.objects.create(episode=self.episode, start_time=5.0, end_time=15.0, confirmed=True)
+            res = self.client.post(reverse("episode_package", args=[self.episode.pk]))
+            self.assertEqual(res.status_code, 302)
+            self.assertIn("error=", res.url)
+            self.assertIn("missing", res.url)
+            self.episode.refresh_from_db()
+            self.assertFalse(self.episode.delivered)
+
+    def test_delivery_rejected_with_stale_timestamp_render(self):
+        with override_settings(OUTPUT_DIR=self.output_dir):
+            clip = Clip.objects.create(episode=self.episode, start_time=10.0, end_time=20.0, confirmed=True)
+            name = _short_name(self.episode, 1)
+            mp4_file = self.output_dir / name
+            mp4_file.write_bytes(b"\x00\x00\x00\x18ftypmp42fake-video-content")
+            meta_file = self.output_dir / f"{mp4_file.stem}.meta.json"
+            # Metadata has older timestamps 5.0 - 15.0
+            meta_file.write_text(json.dumps({
+                "clip_id": clip.pk,
+                "source_start": 5.0,
+                "source_end": 15.0,
+                "caption_override": "",
+                "status": "complete",
+            }), encoding="utf-8")
+
+            res = self.client.post(reverse("episode_package", args=[self.episode.pk]))
+            self.assertEqual(res.status_code, 302)
+            self.assertIn("stale", res.url)
+            self.episode.refresh_from_db()
+            self.assertFalse(self.episode.delivered)
+
+    def test_delivery_rejected_with_stale_caption_render(self):
+        with override_settings(OUTPUT_DIR=self.output_dir):
+            clip = Clip.objects.create(episode=self.episode, start_time=5.0, end_time=15.0, caption_override="Updated Hook", confirmed=True)
+            name = _short_name(self.episode, 1)
+            mp4_file = self.output_dir / name
+            mp4_file.write_bytes(b"\x00\x00\x00\x18ftypmp42fake-video-content")
+            meta_file = self.output_dir / f"{mp4_file.stem}.meta.json"
+            meta_file.write_text(json.dumps({
+                "clip_id": clip.pk,
+                "source_start": 5.0,
+                "source_end": 15.0,
+                "caption_override": "Old Hook",
+                "status": "complete",
+            }), encoding="utf-8")
+
+            res = self.client.post(reverse("episode_package", args=[self.episode.pk]))
+            self.assertEqual(res.status_code, 302)
+            self.assertIn("stale", res.url)
+            self.episode.refresh_from_db()
+            self.assertFalse(self.episode.delivered)
+
+    def test_delivery_successful_packaging(self):
+        with override_settings(OUTPUT_DIR=self.output_dir):
+            clip1 = Clip.objects.create(episode=self.episode, start_time=5.0, end_time=15.0, confirmed=True)
+            clip2 = Clip.objects.create(episode=self.episode, start_time=20.0, end_time=30.0, confirmed=True)
+
+            for i, clip in enumerate([clip1, clip2], 1):
+                name = _short_name(self.episode, i)
+                mp4_file = self.output_dir / name
+                mp4_file.write_bytes(b"\x00\x00\x00\x18ftypmp42fake-video-data")
+                meta_file = self.output_dir / f"{mp4_file.stem}.meta.json"
+                meta_file.write_text(json.dumps({
+                    "clip_id": clip.pk,
+                    "source_start": clip.start_time,
+                    "source_end": clip.end_time,
+                    "caption_override": "",
+                    "status": "complete",
+                }), encoding="utf-8")
+
+            res = self.client.post(reverse("episode_package", args=[self.episode.pk]))
+            self.assertEqual(res.status_code, 302)
+            self.assertIn("msg=Packaged", res.url)
+
+            self.episode.refresh_from_db()
+            self.assertTrue(self.episode.delivered)
+
+            zip_path = self.output_dir / "deliveries" / self.project.slug / f"{self.episode.pk:04d}_batch.zip"
+            self.assertTrue(zip_path.exists())
+            self.assertGreater(zip_path.stat().st_size, 0)
+
+
+class ClipEditCorrectnessTests(TestCase):
+    def setUp(self):
+        self.project = ClientProject.objects.create(
+            name="Edit Test Project",
+            default_template="full_bleed_solo",
+            caption_template="hormozi_pop",
+            video_filter="vivid_pop",
+        )
+        self.episode = Episode.objects.create(
+            project=self.project,
+            video_id="edit_vid",
+            delivered=True,
+        )
+        self.clip = Clip.objects.create(
+            episode=self.episode,
+            start_time=10.0,
+            end_time=25.0,
+            confirmed=True,
+        )
+
+    @patch("webui.jobs.render_one_clip")
+    def test_clip_edit_invalidates_approval_and_delivery(self, mock_render):
+        trim_url = reverse("clip_trim", args=[self.episode.pk, self.clip.pk])
+        res = self.client.post(trim_url, {"start": "12.0", "end": "28.0"})
+        self.assertEqual(res.status_code, 302)
+
+        self.clip.refresh_from_db()
+        self.assertAlmostEqual(self.clip.start_time, 12.0)
+        self.assertAlmostEqual(self.clip.end_time, 28.0)
+        self.assertFalse(self.clip.confirmed, "Clip approval must be invalidated after edit")
+
+        self.episode.refresh_from_db()
+        self.assertFalse(self.episode.delivered, "Episode delivery status must be reset after clip edit")
+
+    @patch("webui.jobs.render_one_clip")
+    def test_settings_isolation_does_not_modify_project_defaults(self, mock_render):
+        trim_url = reverse("clip_trim", args=[self.episode.pk, self.clip.pk])
+        res = self.client.post(trim_url, {
+            "start": "10.0",
+            "end": "25.0",
+            "template": "podcast_split_screen",
+            "caption_template": "beast_neon",
+            "video_filter": "warm_studio",
+        })
+        self.assertEqual(res.status_code, 302)
+
+        # Check render_one_clip was called with the overrides
+        mock_render.assert_called_once()
+        kwargs = mock_render.call_args[1]
+        self.assertEqual(kwargs.get("template"), "podcast_split_screen")
+        self.assertEqual(kwargs.get("caption_template"), "beast_neon")
+        self.assertEqual(kwargs.get("video_filter"), "warm_studio")
+
+        # Project defaults must remain UNCHANGED
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.default_template, "full_bleed_solo")
+        self.assertEqual(self.project.caption_template, "hormozi_pop")
+        self.assertEqual(self.project.video_filter, "vivid_pop")
+
+    @patch("webui.views._get_source_duration", return_value=60.0)
+    def test_invalid_timestamps_rejected_with_error(self, mock_dur):
+        trim_url = reverse("clip_trim", args=[self.episode.pk, self.clip.pk])
+
+        # Negative start
+        res = self.client.post(trim_url, {"start": "-5.0", "end": "20.0"})
+        self.assertEqual(res.status_code, 302)
+        self.assertIn("error=", res.url)
+        self.assertIn("negative", res.url)
+
+        # End <= Start
+        res = self.client.post(trim_url, {"start": "25.0", "end": "20.0"})
+        self.assertEqual(res.status_code, 302)
+        self.assertIn("error=", res.url)
+        self.assertIn("greater", res.url)
+
+        # Exceeds duration
+        res = self.client.post(trim_url, {"start": "10.0", "end": "75.0"})
+        self.assertEqual(res.status_code, 302)
+        self.assertIn("error=", res.url)
+        self.assertIn("exceeds", res.url)
+
+        # Non-numeric
+        res = self.client.post(trim_url, {"start": "abc", "end": "xyz"})
+        self.assertEqual(res.status_code, 302)
+        self.assertIn("error=", res.url)
+
+        # Verify clip timestamps were NOT modified
+        self.clip.refresh_from_db()
+        self.assertAlmostEqual(self.clip.start_time, 10.0)
+        self.assertAlmostEqual(self.clip.end_time, 25.0)
+
+    @patch("webui.views._get_source_duration", return_value=60.0)
+    def test_clip_add_invalid_timestamps(self, mock_dur):
+        add_url = reverse("clip_add", args=[self.episode.pk])
+        res = self.client.post(add_url, {"start": "70.0", "end": "80.0"})
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("exceeds", res.json().get("error", ""))
+
+
+class RenderJobRecoveryTests(TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.output_dir = Path(self.temp_dir.name)
+        self.project = ClientProject.objects.create(name="Job Recovery Project")
+        self.episode = Episode.objects.create(
+            project=self.project,
+            video_id="recovery_vid",
+            source_file=str(self.output_dir / "source_recovery_vid.mp4"),
+        )
+        self.clip = Clip.objects.create(episode=self.episode, start_time=5.0, end_time=15.0)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_abandoned_job_marked_interrupted_on_recovery(self):
+        with override_settings(OUTPUT_DIR=self.output_dir):
+            job = RenderJob.objects.create(episode=self.episode, status=RenderJob.STATUS_RENDERING, progress=30)
+            interrupted = recover_interrupted_jobs(self.episode)
+            self.assertEqual(len(interrupted), 1)
+            job.refresh_from_db()
+            self.assertEqual(job.status, RenderJob.STATUS_FAILED)
+            self.assertIn("Interrupted", job.message)
+            self.assertIsNotNone(job.finished_at)
+
+    def test_safe_retry_after_interrupted_job(self):
+        with override_settings(OUTPUT_DIR=self.output_dir):
+            job = RenderJob.objects.create(episode=self.episode, status=RenderJob.STATUS_QUEUED)
+            status_url = reverse("render_status", args=[self.episode.pk])
+            res = self.client.get(status_url)
+            self.assertEqual(res.json()["status"], RenderJob.STATUS_FAILED)
+
+            # Starting a new render is not blocked by abandoned job
+            with patch("webui.views.start_render_job") as mock_start:
+                mock_start.return_value = None
+                render_res = self.client.post(reverse("episode_render", args=[self.episode.pk]))
+                self.assertEqual(render_res.status_code, 302)
+                mock_start.assert_called_once()
+
+    def test_incomplete_output_files_cleaned_up_on_recovery(self):
+        with override_settings(OUTPUT_DIR=self.output_dir):
+            name = _short_name(self.episode, 1)
+            partial_mp4 = self.output_dir / name
+            partial_mp4.write_bytes(b"partial-data")
+
+            RenderJob.objects.create(episode=self.episode, status=RenderJob.STATUS_RENDERING)
+            recover_interrupted_jobs(self.episode)
+
+            # Partial file must be removed and not treated as finished render
+            self.assertFalse(partial_mp4.exists(), "Incomplete output file should be cleaned up")
+            self.assertFalse(is_valid_clip_render(self.episode, self.clip, 1))
+

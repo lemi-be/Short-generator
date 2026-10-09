@@ -12,7 +12,7 @@ from django.http import FileResponse, Http404, HttpResponse, HttpResponseNotFoun
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
-from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.csrf import ensure_csrf_cookie
 from urllib.parse import quote
 
 from .models import ClientProject, Clip, Episode, RenderJob
@@ -109,9 +109,45 @@ def _short_name(episode: Episode, idx: int) -> str:
     return f"{episode.project.slug}_{episode.pk:04d}_clip{idx:02d}.mp4"
 
 
+def _get_source_duration(episode: Episode) -> float:
+    """Best-effort probe of source video duration in seconds."""
+    source_p = Path(episode.source_file) if episode.source_file else _source_path(episode.video_id)
+    if not source_p.exists():
+        source_p = _source_path(episode.video_id)
+    if source_p.exists():
+        try:
+            dur_str = _ffprobe(source_p, "format=duration")
+            dur = float(dur_str)
+            if dur > 0:
+                return dur
+        except Exception:
+            pass
+    srt_path = Path(settings.OUTPUT_DIR) / f"source_{episode.video_id}.srt"
+    if srt_path.exists():
+        try:
+            from shorts_generator.local.transcriber import _load_srt_cache
+            cached = _load_srt_cache(srt_path)
+            if cached and cached.get("duration", 0) > 0:
+                return float(cached["duration"])
+            segments = cached.get("segments") if cached else None
+            if segments:
+                return float(segments[-1].get("end", 0.0))
+        except Exception:
+            pass
+    return 0.0
+
+
 def _rendered_shorts(episode: Episode):
-    out = Path(settings.OUTPUT_DIR)
-    return sorted(out.glob(f"{episode.project.slug}_{episode.pk:04d}_clip*.mp4"))
+    from .jobs import is_valid_clip_render
+    valid_files = []
+    clips = sorted(episode.clips.all(), key=lambda c: c.start_time)
+    for i, clip in enumerate(clips, 1):
+        if is_valid_clip_render(episode, clip, i):
+            name = _short_name(episode, i)
+            p = Path(settings.OUTPUT_DIR) / name
+            if p.exists():
+                valid_files.append(p)
+    return valid_files
 
 
 def _caption_style(project: ClientProject) -> dict:
@@ -144,6 +180,8 @@ def _branding(project: ClientProject) -> dict:
 
 def _episode_state(episode: Episode):
     """Return (color, message, counts) where color in {red, amber, green, off}."""
+    from .jobs import recover_interrupted_jobs
+    recover_interrupted_jobs(episode)
     source = _source_path(episode.video_id)
     srt = Path(settings.OUTPUT_DIR) / f"source_{episode.video_id}.srt"
     clips = list(episode.clips.all())
@@ -218,7 +256,6 @@ def home(request):
     })
 
 
-@csrf_exempt
 def project_new(request):
     if request.method == "POST":
         name = request.POST.get("name", "").strip()
@@ -269,7 +306,6 @@ def project_new(request):
 
 # ── Project detail / episodes ──────────────────────────────────────────
 
-@csrf_exempt
 def project_detail(request, project_id):
     project = get_object_or_404(ClientProject, pk=project_id)
     if request.method == "POST" and request.POST.get("action") == "update_settings":
@@ -308,7 +344,6 @@ def project_detail(request, project_id):
     })
 
 
-@csrf_exempt
 def episode_add(request, project_id):
     project = get_object_or_404(ClientProject, pk=project_id)
     if request.method != "POST":
@@ -370,6 +405,7 @@ def episode_add(request, project_id):
 
 # ── Mark clips ─────────────────────────────────────────────────────────
 
+@ensure_csrf_cookie
 def episode_mark(request, episode_id):
     episode = get_object_or_404(Episode, pk=episode_id)
     segments = _transcript_for(episode.video_id)
@@ -402,32 +438,53 @@ def episode_mark(request, episode_id):
         "tally": color,
         "state_message": message,
         "active_job": active_job,
+        "error": request.GET.get("error", ""),
         "msg": request.GET.get("msg", ""),
     })
 
 
-@csrf_exempt
 def clip_add(request, episode_id):
     episode = get_object_or_404(Episode, pk=episode_id)
     if request.method == "POST":
+        start_raw = request.POST.get("start", "")
+        end_raw = request.POST.get("end", "")
+        if not str(start_raw).strip() or not str(end_raw).strip():
+            return JsonResponse({"ok": False, "error": "Start and end times are required."}, status=400)
         try:
-            start = float(request.POST.get("start", ""))
-            end = float(request.POST.get("end", ""))
-            if end > start:
-                Clip.objects.create(episode=episode, start_time=start, end_time=end)
-                return JsonResponse({"ok": True})
+            start = float(start_raw)
+            end = float(end_raw)
         except (TypeError, ValueError):
-            return JsonResponse({"ok": False, "error": "bad times"}, status=400)
-    return JsonResponse({"ok": False}, status=405)
+            return JsonResponse({"ok": False, "error": "Invalid timestamp input: numbers required."}, status=400)
+
+        if start < 0:
+            return JsonResponse({"ok": False, "error": "Start time cannot be negative."}, status=400)
+        if end <= start:
+            return JsonResponse({"ok": False, "error": "End time must be greater than start time."}, status=400)
+
+        dur = _get_source_duration(episode)
+        if dur > 0:
+            if start >= dur:
+                return JsonResponse({"ok": False, "error": f"Start time ({start:.1f}s) exceeds source video duration ({dur:.1f}s)."}, status=400)
+            if end > dur + 0.1:
+                return JsonResponse({"ok": False, "error": f"End time ({end:.1f}s) exceeds source video duration ({dur:.1f}s)."}, status=400)
+
+        clip = Clip.objects.create(episode=episode, start_time=start, end_time=end, confirmed=False)
+        if episode.delivered:
+            episode.delivered = False
+            episode.save(update_fields=["delivered"])
+        return JsonResponse({"ok": True, "id": clip.pk})
+    return JsonResponse({"ok": False, "error": "Method not allowed."}, status=405)
 
 
-@csrf_exempt
 def clip_delete(request, episode_id, clip_id):
     episode = get_object_or_404(Episode, pk=episode_id)
     if request.method == "POST":
         Clip.objects.filter(pk=clip_id, episode=episode).delete()
+        if episode.delivered:
+            episode.delivered = False
+            episode.save(update_fields=["delivered"])
         return JsonResponse({"ok": True})
-    return JsonResponse({"ok": False}, status=405)
+    return JsonResponse({"ok": False, "error": "Method not allowed."}, status=405)
 
 
 # ── Async batch render ─────────────────────────────────────────────────
@@ -441,13 +498,14 @@ def start_render_job(episode: Episode) -> RenderJob:
     return job
 
 
-@csrf_exempt
 def episode_render(request, episode_id):
     episode = get_object_or_404(Episode, pk=episode_id)
     if request.method != "POST":
         return redirect("episode_mark", episode_id=episode.pk)
+    from .jobs import recover_interrupted_jobs
+    recover_interrupted_jobs(episode)
     if not episode.clips.exists():
-        return redirect("episode_mark", episode_id=episode.pk)
+        return redirect(f"{reverse('episode_mark', kwargs={'episode_id': episode.pk})}?error={quote('No clips marked for this episode.')}")
     # Don't stack duplicate jobs for the same episode.
     active = episode.render_jobs.exclude(
         status__in=[RenderJob.STATUS_DONE, RenderJob.STATUS_FAILED, RenderJob.STATUS_CANCELLED]
@@ -458,7 +516,6 @@ def episode_render(request, episode_id):
     return redirect("episode_mark", episode_id=episode.pk)
 
 
-@csrf_exempt
 def render_cancel(request, episode_id):
     """Cancel any queued or running batch render for this episode."""
     episode = get_object_or_404(Episode, pk=episode_id)
@@ -477,6 +534,8 @@ def render_cancel(request, episode_id):
 
 def render_status(request, episode_id):
     episode = get_object_or_404(Episode, pk=episode_id)
+    from .jobs import recover_interrupted_jobs
+    recover_interrupted_jobs(episode)
     job = episode.render_jobs.first()
     if job is None:
         return JsonResponse({"status": "none"})
@@ -492,18 +551,27 @@ def render_status(request, episode_id):
 # ── Quick clip review ──────────────────────────────────────────────────
 
 def _review_clips(episode: Episode):
-    """Return [{clip, short_url, size, index}] for rendered clips."""
+    """Return [{clip, short_url, size, index, valid}] for clips."""
+    from .jobs import is_valid_clip_render
     clips = list(episode.clips.all())
     out = []
     for i, clip in enumerate(clips, 1):
         name = _short_name(episode, i)
         path = Path(settings.OUTPUT_DIR) / name
-        short_url = reverse("serve_output", args=[name]) if path.exists() else None
-        size = path.stat().st_size if path.exists() else 0
-        out.append({"clip": clip, "short_url": short_url, "size": size, "index": i})
+        valid = is_valid_clip_render(episode, clip, i)
+        short_url = reverse("serve_output", args=[name]) if (valid and path.exists()) else None
+        size = path.stat().st_size if (valid and path.exists()) else 0
+        out.append({
+            "clip": clip,
+            "short_url": short_url,
+            "size": size,
+            "index": i,
+            "valid": valid,
+        })
     return out
 
 
+@ensure_csrf_cookie
 def episode_review(request, episode_id):
     episode = get_object_or_404(Episode, pk=episode_id)
     clips = _review_clips(episode)
@@ -534,11 +602,11 @@ def episode_review(request, episode_id):
         "templates": templates,
         "caption_templates": ClientProject.CAPTION_TEMPLATE_CHOICES,
         "video_filters": ClientProject.VIDEO_FILTER_CHOICES,
+        "error": request.GET.get("error", ""),
         "msg": request.GET.get("msg", ""),
     })
 
 
-@csrf_exempt
 def clip_confirm(request, episode_id, clip_id):
     clip = get_object_or_404(Clip, pk=clip_id, episode_id=episode_id)
     if request.method == "POST":
@@ -550,58 +618,108 @@ def clip_confirm(request, episode_id, clip_id):
     return redirect("episode_review", episode_id=episode_id)
 
 
-@csrf_exempt
 def clip_trim(request, episode_id, clip_id):
     """Adjust a clip's in/out and settings, then re-render just that clip synchronously."""
     episode = get_object_or_404(Episode, pk=episode_id)
     clip = get_object_or_404(Clip, pk=clip_id, episode=episode)
-    if request.method == "POST":
-        try:
-            start_raw = request.POST.get("start")
-            end_raw = request.POST.get("end")
-            if start_raw is not None and end_raw is not None:
-                start = float(start_raw)
-                end = float(end_raw)
-                if end > start:
-                    clip.start_time = start
-                    clip.end_time = end
-            if "caption" in request.POST:
-                clip.caption_override = request.POST.get("caption", "").strip()
-            clip.save()
-
-            template_override = request.POST.get("template")
-            if template_override:
-                episode.project.default_template = template_override
-                episode.project.save(update_fields=["default_template"])
-
-            caption_tmpl_override = request.POST.get("caption_template")
-            if caption_tmpl_override:
-                episode.project.caption_template = caption_tmpl_override
-                episode.project.save(update_fields=["caption_template"])
-
-            video_filter_override = request.POST.get("video_filter")
-            if video_filter_override:
-                episode.project.video_filter = video_filter_override
-                episode.project.save(update_fields=["video_filter"])
-        except (TypeError, ValueError):
-            pass
     clips = sorted(episode.clips.all(), key=lambda c: c.start_time)
     idx = clips.index(clip) + 1
+
+    if request.method != "POST":
+        return redirect(f"{reverse('episode_review', kwargs={'episode_id': episode_id})}?idx={idx}")
+
+    start_raw = request.POST.get("start")
+    end_raw = request.POST.get("end")
+    if start_raw is None or end_raw is None or str(start_raw).strip() == "" or str(end_raw).strip() == "":
+        error_msg = "Start and end times are required."
+        return redirect(f"{reverse('episode_review', kwargs={'episode_id': episode_id})}?idx={idx}&error={quote(error_msg)}")
+
+    try:
+        start = float(start_raw)
+        end = float(end_raw)
+    except (TypeError, ValueError):
+        error_msg = "Invalid timestamp input: numbers required."
+        return redirect(f"{reverse('episode_review', kwargs={'episode_id': episode_id})}?idx={idx}&error={quote(error_msg)}")
+
+    if start < 0:
+        error_msg = "Start time cannot be negative."
+        return redirect(f"{reverse('episode_review', kwargs={'episode_id': episode_id})}?idx={idx}&error={quote(error_msg)}")
+
+    if end <= start:
+        error_msg = "End time must be greater than start time."
+        return redirect(f"{reverse('episode_review', kwargs={'episode_id': episode_id})}?idx={idx}&error={quote(error_msg)}")
+
+    dur = _get_source_duration(episode)
+    if dur > 0:
+        if start >= dur:
+            error_msg = f"Start time ({start:.1f}s) exceeds source video duration ({dur:.1f}s)."
+            return redirect(f"{reverse('episode_review', kwargs={'episode_id': episode_id})}?idx={idx}&error={quote(error_msg)}")
+        if end > dur + 0.1:
+            error_msg = f"End time ({end:.1f}s) exceeds source video duration ({dur:.1f}s)."
+            return redirect(f"{reverse('episode_review', kwargs={'episode_id': episode_id})}?idx={idx}&error={quote(error_msg)}")
+
+    # Editing a clip invalidates its approval!
+    clip.start_time = start
+    clip.end_time = end
+    clip.confirmed = False
+    if "caption" in request.POST:
+        clip.caption_override = request.POST.get("caption", "").strip()
+    clip.save()
+
+    # Invalidate delivery status if episode was previously marked delivered
+    if episode.delivered:
+        episode.delivered = False
+        episode.save(update_fields=["delivered"])
+
+    # Per-clip render overrides must NOT modify project defaults in the database!
+    template_override = request.POST.get("template") or episode.project.default_template
+    caption_tmpl_override = request.POST.get("caption_template") or episode.project.caption_template
+    video_filter_override = request.POST.get("video_filter") or episode.project.video_filter
+
     out_path = Path(settings.OUTPUT_DIR) / _short_name(episode, idx)
     try:
         from .jobs import render_one_clip
-        render_one_clip(episode, clip, idx, out_path)
+        render_one_clip(
+            episode,
+            clip,
+            idx,
+            out_path,
+            template=template_override,
+            caption_template=caption_tmpl_override,
+            video_filter=video_filter_override,
+        )
         msg = "Clip re-rendered with agency production engine."
+        return redirect(f"{reverse('episode_review', kwargs={'episode_id': episode_id})}?idx={idx}&msg={quote(msg)}")
     except Exception as exc:
         msg = f"Re-render failed: {exc}"
-    return redirect(f"{reverse('episode_review', kwargs={'episode_id': episode_id})}?idx={idx}&msg={quote(msg)}")
+        return redirect(f"{reverse('episode_review', kwargs={'episode_id': episode_id})}?idx={idx}&error={quote(msg)}")
 
 
 # ── Package & deliver ──────────────────────────────────────────────────
 
+def validate_episode_delivery(episode: Episode) -> list:
+    """Validate that every clip in the episode is approved, has a valid rendered MP4,
+    and rendered metadata matches the current clip timestamps and settings."""
+    from .jobs import check_clip_render_status
+    clips = sorted(episode.clips.all(), key=lambda c: c.start_time)
+    if not clips:
+        return ["No clips marked for this episode."]
+
+    errors = []
+    for i, clip in enumerate(clips, 1):
+        if not clip.confirmed:
+            errors.append(f"Clip {i} ({clip.start_time:.1f}s - {clip.end_time:.1f}s) is not approved/confirmed.")
+        valid, reason = check_clip_render_status(episode, clip, i)
+        if not valid:
+            errors.append(reason)
+    return errors
+
+
+@ensure_csrf_cookie
 def episode_deliver(request, episode_id):
     episode = get_object_or_404(Episode, pk=episode_id)
     clips = _review_clips(episode)
+    delivery_errors = validate_episode_delivery(episode)
     color, message, counts = _episode_state(episode)
     zip_rel = f"deliveries/{episode.project.slug}/{episode.pk:04d}_batch.zip"
     return render(request, "webui/episode_deliver.html", {
@@ -610,36 +728,57 @@ def episode_deliver(request, episode_id):
         "tally": color if episode.delivered else "amber",
         "zip_rel": zip_rel,
         "zip_exists": (Path(settings.OUTPUT_DIR) / zip_rel).exists(),
+        "delivery_errors": delivery_errors,
+        "can_package": len(delivery_errors) == 0,
+        "error": request.GET.get("error", ""),
         "msg": request.GET.get("msg", ""),
     })
 
 
-@csrf_exempt
 def episode_package(request, episode_id):
     episode = get_object_or_404(Episode, pk=episode_id)
     if request.method != "POST":
         return redirect("episode_deliver", episode_id=episode.pk)
 
+    # Delivery integrity: Validate every clip has valid rendered MP4, confirmed approval, matching timestamps and settings
+    errors = validate_episode_delivery(episode)
+    if errors:
+        error_msg = "; ".join(errors)
+        return redirect(f"{reverse('episode_deliver', kwargs={'episode_id': episode.pk})}?error={quote('Delivery rejected: ' + error_msg)}")
+
     out_dir = Path(settings.OUTPUT_DIR)
     delivery_dir = out_dir / "deliveries" / episode.project.slug / f"{episode.pk:04d}"
     delivery_dir.mkdir(parents=True, exist_ok=True)
 
+    clips = sorted(episode.clips.all(), key=lambda c: c.start_time)
     copied = []
-    for i, clip in enumerate(sorted(episode.clips.all(), key=lambda c: c.start_time), 1):
+    for i, clip in enumerate(clips, 1):
         name = _short_name(episode, i)
         src = out_dir / name
-        if src.exists():
-            dest = delivery_dir / f"{episode.project.slug}_{episode.pk:04d}_clip{i:02d}.mp4"
+        dest = delivery_dir / f"{episode.project.slug}_{episode.pk:04d}_clip{i:02d}.mp4"
+        try:
             shutil.copy2(src, dest)
             copied.append(dest)
+        except Exception as exc:
+            return redirect(f"{reverse('episode_deliver', kwargs={'episode_id': episode.pk})}?error={quote(f'Failed to copy clip {i}: {exc}')}")
+
+    if len(copied) != len(clips):
+        return redirect(f"{reverse('episode_deliver', kwargs={'episode_id': episode.pk})}?error={quote('Incomplete package: some clips could not be copied.')}")
 
     zip_path = out_dir / "deliveries" / episode.project.slug / f"{episode.pk:04d}_batch.zip"
-    if copied:
+    try:
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
             for f in copied:
                 zf.write(f, arcname=f.name)
-        episode.delivered = True
-        episode.save(update_fields=["delivered"])
+    except Exception as exc:
+        return redirect(f"{reverse('episode_deliver', kwargs={'episode_id': episode.pk})}?error={quote(f'Failed to create zip archive: {exc}')}")
+
+    if not zip_path.exists() or zip_path.stat().st_size == 0:
+        return redirect(f"{reverse('episode_deliver', kwargs={'episode_id': episode.pk})}?error={quote('Failed to create package: zip archive is empty or missing.')}")
+
+    # Set episode.delivered=True ONLY after a complete package is successfully created
+    episode.delivered = True
+    episode.save(update_fields=["delivered"])
     return redirect(f"{reverse('episode_deliver', kwargs={'episode_id': episode.pk})}?msg={quote('Packaged & marked delivered.')}")
 
 

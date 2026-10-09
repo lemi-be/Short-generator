@@ -8,6 +8,8 @@
   <span class="meta">caption style preset: <span class="timecode">{{ episode.project.caption_font }} · {{ episode.project.caption_color }} · {{ episode.project.caption_position }}</span></span>
 </div>
 
+{% csrf_token %}
+{% if error %}<div class="msg-error">{{ error }}</div>{% endif %}
 {% if msg %}<div class="msg-success">{{ msg }}</div>{% endif %}
 
 <div id="render-banner" style="display:none;margin-bottom:0.9rem;background:var(--bg-panel-raised);border:1px solid var(--tally-amber);padding:.6rem .85rem;border-radius:6px">
@@ -129,9 +131,14 @@ async function setDraftOut() {
   const body = new URLSearchParams({ start: inSec, end: outSec });
   const res = await fetch("{% url 'clip_add' episode.pk %}", {
     method: 'POST', body,
-    headers: { 'X-CSRFToken': getCookie('csrftoken') }
+    headers: { 'X-CSRFToken': getCsrfToken() }
   });
-  if (res.ok) { location.reload(); }
+  if (res.ok) {
+    location.reload();
+  } else {
+    const data = await res.json().catch(() => ({}));
+    alert(data.error || "Failed to mark clip");
+  }
 }
 
 document.addEventListener('keydown', e => {
@@ -143,14 +150,19 @@ document.addEventListener('keydown', e => {
 
 async function delClip(id) {
   const res = await fetch(`/episodes/{{ episode.pk }}/clips/${id}/delete/`, {
-    method: 'POST', headers: { 'X-CSRFToken': getCookie('csrftoken') }
+    method: 'POST', headers: { 'X-CSRFToken': getCsrfToken() }
   });
-  if (res.ok) location.reload();
+  if (res.ok) {
+    location.reload();
+  } else {
+    const data = await res.json().catch(() => ({}));
+    alert(data.error || "Failed to delete clip");
+  }
 }
 
 async function renderAll() {
   const res = await fetch("{% url 'episode_render' episode.pk %}", {
-    method: 'POST', headers: { 'X-CSRFToken': getCookie('csrftoken') }
+    method: 'POST', headers: { 'X-CSRFToken': getCsrfToken() }
   });
   if (!res.redirected && !res.ok) return;
   showBanner();
@@ -219,7 +231,7 @@ async function cancelRender() {
   try {
     const res = await fetch("{% url 'render_cancel' episode.pk %}", {
       method: 'POST',
-      headers: { 'X-CSRFToken': getCookie('csrftoken') }
+      headers: { 'X-CSRFToken': getCsrfToken() }
     });
     const data = await res.json();
     if (data.ok) {
@@ -234,9 +246,11 @@ async function cancelRender() {
   }
 }
 
-function getCookie(name) {
-  const m = document.cookie.match(new RegExp('(^|; )' + name + '=([^;]*)'));
-  return m ? decodeURIComponent(m[2]) : null;
+function getCsrfToken() {
+  const m = document.cookie.match(new RegExp('(^|; )csrftoken=([^;]*)'));
+  if (m) return decodeURIComponent(m[2]);
+  const input = document.querySelector('[name=csrfmiddlewaretoken]');
+  return input ? input.value : '';
 }
 
 {% if active_job %}

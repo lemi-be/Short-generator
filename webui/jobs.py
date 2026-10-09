@@ -54,6 +54,7 @@ def _branding(project):
 
 
 _CANCELLED_JOBS = set()
+_RUNNING_JOBS = set()
 
 
 def cancel_job_in_memory(job_id: int) -> None:
@@ -62,6 +63,130 @@ def cancel_job_in_memory(job_id: int) -> None:
 
 def is_job_cancelled(job_id: int) -> bool:
     return job_id in _CANCELLED_JOBS
+
+
+def register_running_job(job_id: int) -> None:
+    _RUNNING_JOBS.add(job_id)
+
+
+def unregister_running_job(job_id: int) -> None:
+    _RUNNING_JOBS.discard(job_id)
+
+
+def is_job_running(job_id: int) -> bool:
+    return job_id in _RUNNING_JOBS
+
+
+def check_clip_render_status(episode, clip, idx: int) -> tuple:
+    """Check if rendered MP4 file exists, is non-empty, and matches clip timestamps and settings."""
+    from django.conf import settings
+    out_dir = Path(settings.OUTPUT_DIR)
+    name = _short_name(episode, idx)
+    mp4_path = out_dir / name
+    if not mp4_path.exists():
+        return False, f"Clip {idx} rendered MP4 ({name}) is missing."
+    if not mp4_path.is_file() or mp4_path.stat().st_size == 0:
+        return False, f"Clip {idx} rendered MP4 ({name}) is empty (0 bytes)."
+
+    meta_path = out_dir / f"{mp4_path.stem}.meta.json"
+    if not meta_path.exists():
+        meta_path = out_dir / f"{mp4_path.name}.meta.json"
+    if not meta_path.exists():
+        return False, f"Clip {idx} render metadata sidecar is missing."
+
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return False, f"Clip {idx} render metadata is corrupted ({exc})."
+
+    if meta.get("status") not in (None, "complete"):
+        return False, f"Clip {idx} render was not completed."
+
+    if meta.get("clip_id") and meta.get("clip_id") != clip.pk:
+        return False, f"Clip {idx} render metadata does not belong to this clip."
+
+    meta_start = float(meta.get("source_start", -999))
+    meta_end = float(meta.get("source_end", -999))
+    if abs(meta_start - clip.start_time) > 0.05 or abs(meta_end - clip.end_time) > 0.05:
+        return (
+            False,
+            f"Clip {idx} render is stale: render timestamps ({meta_start:.1f}s - {meta_end:.1f}s) "
+            f"do not match current clip timestamps ({clip.start_time:.1f}s - {clip.end_time:.1f}s).",
+        )
+
+    meta_caption = (meta.get("caption_override") or "").strip()
+    clip_caption = (clip.caption_override or "").strip()
+    if meta_caption != clip_caption:
+        return (
+            False,
+            f"Clip {idx} render is stale: caption override was changed after rendering.",
+        )
+
+    return True, "OK"
+
+
+def is_valid_clip_render(episode, clip, idx: int) -> bool:
+    valid, _ = check_clip_render_status(episode, clip, idx)
+    return valid
+
+
+def recover_interrupted_jobs(episode=None) -> list:
+    """Find any queued or rendering jobs whose in-memory worker thread is not running
+    (e.g. after server restart or crash), mark them failed, and clean up incomplete renders."""
+    from .models import RenderJob
+    from django.conf import settings
+
+    qs = RenderJob.objects.filter(
+        status__in=[RenderJob.STATUS_QUEUED, RenderJob.STATUS_RENDERING]
+    )
+    if episode is not None:
+        qs = qs.filter(episode=episode)
+
+    interrupted = []
+    for job in qs:
+        if not is_job_running(job.pk):
+            job.status = RenderJob.STATUS_FAILED
+            job.message = "Interrupted: server was restarted while render was in progress"
+            job.error = "Render job was interrupted by server restart or process termination. Safe to retry."
+            job.finished_at = timezone.now()
+            job.save(update_fields=["status", "message", "error", "finished_at"])
+            interrupted.append(job)
+
+            # Cleanup incomplete renders for this episode:
+            try:
+                ep = job.episode
+                clips = sorted(ep.clips.all(), key=lambda c: c.start_time)
+                out_dir = Path(settings.OUTPUT_DIR)
+                for i, clip in enumerate(clips, 1):
+                    mp4_path = out_dir / _short_name(ep, i)
+                    if mp4_path.exists() and not is_valid_clip_render(ep, clip, i):
+                        try:
+                            mp4_path.unlink()
+                        except OSError:
+                            pass
+                        meta_path = out_dir / f"{mp4_path.stem}.meta.json"
+                        if meta_path.exists():
+                            try:
+                                meta_path.unlink()
+                            except OSError:
+                                pass
+            except Exception:
+                pass
+
+    return interrupted
+
+
+_RECOVERY_DONE = False
+
+
+def ensure_startup_recovery():
+    global _RECOVERY_DONE
+    if not _RECOVERY_DONE:
+        _RECOVERY_DONE = True
+        try:
+            recover_interrupted_jobs()
+        except Exception:
+            pass
 
 
 class JobCancellationToken:
@@ -102,7 +227,16 @@ class JobCancellationToken:
         return False
 
 
-def render_one_clip(episode, clip, idx: int, out_path: Path, progress=None) -> None:
+def render_one_clip(
+    episode,
+    clip,
+    idx: int,
+    out_path: Path,
+    progress=None,
+    template: str = None,
+    caption_template: str = None,
+    video_filter: str = None,
+) -> None:
     """Render a single clip. Shared by the batch job and the trim re-render."""
     from shorts_generator.local.clipper import _clip_local_segments, crop_clip_local
 
@@ -118,18 +252,25 @@ def render_one_clip(episode, clip, idx: int, out_path: Path, progress=None) -> N
     )
 
     clip_title = (clip.caption_override or episode.title or "").strip() or None
+    chosen_template = template or episode.project.default_template or "full_bleed_solo"
+    style = _caption_style(episode.project)
+    if caption_template:
+        style["caption_template"] = caption_template
+    if video_filter:
+        style["video_filter"] = video_filter
+
     crop_clip_local(
         str(source),
         clip.start_time,
         clip.end_time,
         str(out_path),
-        template=episode.project.default_template or "full_bleed_solo",
+        template=chosen_template,
         progress=progress,
         text=None,
         title=clip_title,
         segments=segments,
         burn_captions=True,
-        caption_style=_caption_style(episode.project),
+        caption_style=style,
         branding=_branding(episode.project),
     )
 
@@ -141,6 +282,11 @@ def render_one_clip(episode, clip, idx: int, out_path: Path, progress=None) -> N
         "source_start": clip.start_time,
         "source_end": clip.end_time,
         "caption_override": clip.caption_override,
+        "template": chosen_template,
+        "caption_template": style.get("caption_template"),
+        "video_filter": style.get("video_filter"),
+        "status": "complete",
+        "rendered_at": timezone.now().isoformat(),
     })
     (out_path.parent / f"{out_path.stem}.meta.json").write_text(meta_content, encoding="utf-8")
     out_path.with_suffix(".mp4.meta.json").write_text(meta_content, encoding="utf-8")
@@ -151,8 +297,10 @@ def run_render_job(job_id: int) -> None:
     from .models import RenderJob
 
     close_old_connections()
+    register_running_job(job_id)
     job = RenderJob.objects.select_related("episode", "episode__project").filter(pk=job_id).first()
     if job is None:
+        unregister_running_job(job_id)
         return
     try:
         episode = job.episode
@@ -214,4 +362,5 @@ def run_render_job(job_id: int) -> None:
         print(f"[render-job {job_id}] FAILED:\n{job.error}", file=sys.stderr)
     finally:
         _CANCELLED_JOBS.discard(job_id)
+        unregister_running_job(job_id)
         close_old_connections()

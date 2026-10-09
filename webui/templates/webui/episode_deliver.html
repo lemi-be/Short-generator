@@ -8,16 +8,29 @@
   {% if episode.delivered %}<span class="tally-chip green">delivered</span>{% endif %}
 </div>
 
+{% if error %}<div class="msg-error">{{ error }}</div>{% endif %}
 {% if msg %}<div class="msg-success">{{ msg }}</div>{% endif %}
+
+{% if delivery_errors %}
+<div class="msg-error" style="margin-bottom:1rem">
+  <strong>Delivery requirements pending:</strong>
+  <ul style="margin:0.4rem 0 0 1.2rem;font-size:12px">
+    {% for err in delivery_errors %}
+    <li>{{ err }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
 
 <div class="panel mb-1">
   <div class="panel-head">{{ episode.project.name }} — {{ episode.title|default:episode.video_id }} — {{ clips|length }} clips</div>
   <div class="panel-body">
     {% for c in clips %}
     <div class="card-row" style="cursor:default">
-      <span class="tally-dot {% if c.clip.confirmed %}green{% else %}red{% endif %}"></span>
+      <span class="tally-dot {% if c.clip.confirmed and c.valid %}green{% else %}red{% endif %}"></span>
       <span class="timecode" style="flex:1">{{ episode.project.slug }}_{{ episode.pk|stringformat:"04d" }}_clip{{ c.index|stringformat:"02d" }}.mp4</span>
       {% if c.short_url %}<a class="btn sm" href="{{ c.short_url }}" target="_blank" onclick="event.stopPropagation()">view</a>{% endif %}
+      {% if not c.valid %}<span class="tally-chip red">render invalid or stale</span>{% endif %}
       {% if not c.clip.confirmed %}<span class="tally-chip red">unconfirmed</span>{% endif %}
     </div>
     {% endfor %}
@@ -27,7 +40,7 @@
     {% else %}
     <form method="POST" action="{% url 'episode_package' episode.pk %}" class="mt-1">
       {% csrf_token %}
-      <button class="btn green" type="submit" {% if not clips %}disabled{% endif %}>Package &amp; mark delivered</button>
+      <button class="btn green" type="submit" {% if not clips or not can_package %}disabled title="Resolve delivery requirements before packaging"{% endif %}>Package &amp; mark delivered</button>
     </form>
     {% endif %}
   </div>
