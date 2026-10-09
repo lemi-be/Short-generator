@@ -1,8 +1,98 @@
-.env
+# Python & Virtual Environments
 __pycache__/
-*.pyc
-.venv/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+env/
 venv/
+.venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Environment Variables & Secrets
+.env
+.env.local
+.env.*.local
+cookies.txt
+*.cookies.txt
+*.cookies
+
+# Database (Django & SQLite)
+*.sqlite3
+*.db
+db.sqlite3
+
+# Node & Frontend (FreeCut Editor build dependencies)
+node_modules/
+**/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.vite-hooks/
+
+# Outputs, Media & Scratch Files
 output/
+scratch/
+_legacy_trimmer_backup/
+temp.json
+result.json
 *.mp4
+*.mkv
+*.webm
+*.avi
+*.mov
+*.mp3
+*.wav
+*.aac
+*.m4a
+*.zip
+
+# Logs & Temporary Files
+*.log
+*.tmp
+*.temp
+
+# IDEs & Editors
+.idea/
+.vscode/
+*.sublime-workspace
+*.sublime-project
+*.swp
+*.swo
+*~
+
+# Operating System Files
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# AI Assistant Tool State
+.claude/
+.opencode/
+CLAUDE.md
+
+.vendor/
