@@ -4,13 +4,11 @@ import re
 import shutil
 import subprocess
 import sys
-import time
 import zipfile
 from pathlib import Path
 
 from django.conf import settings
-from django.db import transaction
-from django.http import FileResponse, Http404, HttpResponse, HttpResponseNotFound, HttpResponseRedirect, JsonResponse
+from django.http import FileResponse, Http404, HttpResponse, HttpResponseNotFound, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
@@ -787,113 +785,4 @@ def serve_output(request, filename):
         raise Http404()
     return _file_response(request, path, _mime_for(path.name))
 
-
-# ── FreeCut browser editor (advanced mode) ─────────────────────────────
-
-_EDITOR_MIME = {
-    ext: ct
-    for ext, ct in [
-        (".html", "text/html; charset=utf-8"),
-        (".js", "text/javascript; charset=utf-8"),
-        (".mjs", "text/javascript; charset=utf-8"),
-        (".css", "text/css; charset=utf-8"),
-        (".json", "application/json"),
-        (".map", "application/json"),
-        (".webmanifest", "application/manifest+json"),
-        (".svg", "image/svg+xml"),
-        (".png", "image/png"),
-        (".jpg", "image/jpeg"),
-        (".jpeg", "image/jpeg"),
-        (".webp", "image/webp"),
-        (".gif", "image/gif"),
-        (".avif", "image/avif"),
-        (".ico", "image/x-icon"),
-        (".wasm", "application/wasm"),
-        (".woff", "font/woff"),
-        (".woff2", "font/woff2"),
-        (".ttf", "font/ttf"),
-        (".otf", "font/otf"),
-        (".onnx", "application/octet-stream"),
-        (".bin", "application/octet-stream"),
-        (".mp3", "audio/mpeg"),
-        (".wav", "audio/wav"),
-    ]
-}
-
-
-def _isolated_headers(response):
-    response["Cross-Origin-Opener-Policy"] = "same-origin"
-    response["Cross-Origin-Embedder-Policy"] = "require-corp"
-    response["Cross-Origin-Resource-Policy"] = "same-origin"
-    return response
-
-
-def _collect_exports():
-    ws = Path(settings.FREECUT_WORKSPACE)
-    exports = []
-    if ws.is_dir():
-        for p in ws.glob("projects/*/exports/*.mp4"):
-            try:
-                st = p.stat()
-            except OSError:
-                continue
-            exports.append({
-                "name": p.name,
-                "path": str(p.relative_to(ws)).replace("\\", "/"),
-                "size": st.st_size,
-                "mtime": st.st_mtime,
-            })
-    exports.sort(key=lambda e: e["mtime"], reverse=True)
-    return exports
-
-
-def freecut_exports(request):
-    return JsonResponse({"exports": _collect_exports()})
-
-
-@csrf_exempt
-def editor_app(request, path=""):
-    dist = Path(settings.FREECUT_DIST)
-    if not dist.is_dir():
-        return _isolated_headers(HttpResponse(
-            "FreeCut editor build is missing. Rebuild it with "
-            "`npm ci && npm run build` in vendor/freecut.",
-            status=500,
-        ))
-    rel = (path or "index.html").replace("\\", "/")
-    if rel.startswith("/") or ".." in rel.split("/"):
-        return _isolated_headers(HttpResponseNotFound("not found"))
-    target = (dist / rel).resolve()
-    if not str(target).startswith(str(dist.resolve())):
-        return _isolated_headers(HttpResponseNotFound("not found"))
-    if target.is_dir():
-        target = target / "index.html"
-    if target.is_file():
-        content_type = _EDITOR_MIME.get(target.suffix.lower(), "application/octet-stream")
-        return _isolated_headers(_file_response(request, target, content_type))
-    if not target.suffix:
-        index_html = dist / "index.html"
-        if index_html.is_file():
-            return _isolated_headers(_file_response(
-                request, index_html, _EDITOR_MIME[".html"]))
-    return _isolated_headers(HttpResponseNotFound("not found"))
-
-
-def editor_shell(request, video_id):
-    out_dir = Path(settings.OUTPUT_DIR)
-    source_path = out_dir / f"source_{video_id}.mp4"
-    if not source_path.exists():
-        return redirect("home")
-    source_url = reverse("serve_output", args=[source_path.name])
-    return _isolated_headers(render(request, "webui/editor_shell.html", {
-        "video_id": video_id,
-        "filename": source_path.name,
-        "duration": float(_ffprobe(source_path)) or 0,
-        "source_url": source_url,
-        "has_srt": (out_dir / f"source_{video_id}.srt").exists(),
-        "srt_url": reverse("download_transcript", args=[video_id]),
-        "workspace": str(Path(settings.FREECUT_WORKSPACE)),
-        "editor_url": reverse("editor_app"),
-        "editor_start_url": reverse("editor_app") + "projects",
-        "exports": _collect_exports(),
-    }))
+

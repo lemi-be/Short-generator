@@ -111,7 +111,7 @@ def _existing_download(out_dir: str, video_id: str, min_height: Optional[int] = 
 
 def _write_title_sidecar(p: str, info: dict) -> None:
     """Persist the YouTube title next to the download so later stages can name
-    a FreeCut project after the video without another network call."""
+    the episode after the video without another network call."""
     title = info.get("title")
     if not title:
         return

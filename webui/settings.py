@@ -44,10 +44,3 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 OUTPUT_DIR = BASE_DIR / "output"
 
-# FreeCut browser editor (vendored + committed at vendor/freecut/dist).
-FREECUT_DIST = BASE_DIR / "vendor" / "freecut" / "dist"
-
-# FreeCut is a File System Access API workspace editor. It is pointed at the
-# project's output dir so sources, transcripts, audio/logos/stock and exports
-# (written by FreeCut to projects/<id>/exports/) all live in one place.
-FREECUT_WORKSPACE = OUTPUT_DIR

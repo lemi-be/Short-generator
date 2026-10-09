@@ -24,9 +24,9 @@ def main() -> int:
     parser.add_argument("url", help="YouTube URL, file:// URL, or local file path")
     parser.add_argument(
         "--mode",
-        choices=["api", "local"],
+        choices=["local"],
         default="local",
-        help="local (default, yt-dlp + faster-whisper + LLM provider + ffmpeg) or api (MuAPI, kept for reference).",
+        help="Pipeline execution mode (default: local).",
     )
     parser.add_argument("--num-clips", type=int, default=10, help="How many shorts to render (default: 10)")
     parser.add_argument("--format", default="1080", help="Source download resolution: 360 / 480 / 720 / 1080 / best (default: 1080)")

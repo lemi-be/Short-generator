@@ -2596,12 +2596,11 @@ def crop_clip_local(
     *segments* are clip-local transcript segments (start/end/text, offset so
     the clip begins at t=0). When provided, real captions synced to the
     audio replace the static *text* fallback.
-    *burn_captions* is off by default: captions are added as layers in the
-    FreeCut editor and baked in at export time, so nothing is double-burned.
-    Set it to True to render *text*/*segments* into the frame pixels here.
+    *burn_captions* controls subtitle burning: set to True to render
+    word-by-word subtitles into the frame pixels.
     """
     if not burn_captions:
-        # Clean output: leave the captions to the editor's timeline layers.
+        # Clean output: omit burned captions
         text = None
         segments = None
     template = resolve_template(template)
@@ -2697,8 +2696,7 @@ def crop_highlights_local(
     *template* is passed through to *crop_clip_local*.
     *transcript* (optional) provides segment timestamps for real, audio-synced
     captions burned into each clip.
-    *burn_captions* defaults to False — captions are styled in the FreeCut
-    editor and baked at export time instead of into the rendered pixels.
+    *burn_captions*: set to True to burn word-by-word captions into the rendered frames.
     """
     template = resolve_template(template)
     out_dir = out_dir or LOCAL_OUTPUT_DIR
