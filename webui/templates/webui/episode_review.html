@@ -2,10 +2,24 @@
 {% block title %}Review — {{ episode.project.name }}{% endblock %}
 {% block context %}{{ episode.project.name }} — {{ episode.title|default:episode.video_id }}{% endblock %}
 {% block content %}
-<div class="flex" style="margin-bottom:.75rem">
+<div class="flex" style="margin-bottom:.75rem;align-items:center">
   <a href="{% url 'episode_mark' episode.pk %}" class="meta">&larr; Back to marking</a>
+  <div style="display:inline-flex;align-items:center;gap:.35rem;margin-left:1.2rem;background:var(--bg-panel-raised);border:1px solid var(--line-hairline);padding:2px 8px;border-radius:6px">
+    <span class="meta" style="font-size:0.75rem;font-weight:600">Transcript:</span>
+    <a class="btn sm ghost" href="{% url 'download_transcript' episode.video_id %}?format=srt" download title="Download Transcript (.srt)" style="padding:0.15rem 0.45rem;font-size:0.75rem;height:auto">⬇ .SRT</a>
+    <a class="btn sm ghost" href="{% url 'download_transcript' episode.video_id %}?format=txt" download title="Download Transcript (.txt)" style="padding:0.15rem 0.45rem;font-size:0.75rem;height:auto">⬇ .TXT</a>
+    <a class="btn sm ghost" href="{% url 'download_transcript' episode.video_id %}?format=json" download title="Download Transcript (.json)" style="padding:0.15rem 0.45rem;font-size:0.75rem;height:auto">⬇ .JSON</a>
+  </div>
   <span class="spacer" style="flex:1"></span>
-  <span class="meta">caption style preset: <span class="timecode">{{ episode.project.caption_font }} · {{ episode.project.caption_color }} · {{ episode.project.caption_position }}</span></span>
+  <div class="flex" style="gap:0.4rem;align-items:center">
+    <span class="tally-chip green" title="Subtitle Style Template">🎨 {{ episode.project.caption_template }}</span>
+    <span class="tally-chip green" title="Current Canvas Template">⚡ {{ episode.project.default_template }}</span>
+    <span class="tally-chip green" title="Viral Caption Font">🔤 {{ episode.project.caption_font }}</span>
+    {% if episode.project.zoom_punch %}<span class="tally-chip green" title="1.15x Dynamic Retention Zoom">🎯 1.15x Zoom</span>{% endif %}
+    {% if episode.project.master_audio %}<span class="tally-chip green" title="Broadcast Mastering (-14 LUFS)">🔊 -14 LUFS</span>{% endif %}
+    {% if episode.project.hook_card %}<span class="tally-chip green" title="Opening Visual Hook Badge (0.0 - 2.5s)">🪝 Hook Card</span>{% endif %}
+    {% if episode.project.podcast_solo_switch %}<span class="tally-chip green" title="Dynamic Podcast Solo Switcher">🎙️ Solo Switch</span>{% endif %}
+  </div>
 </div>
 
 {% if msg %}<div class="msg-success">{{ msg }}</div>{% endif %}
@@ -33,22 +47,48 @@
       <div class="panel-head">Caption text (auto-filled, editable)</div>
       <div class="panel-body">
         <textarea id="caption-text" rows="3" style="width:100%;resize:vertical">{{ current.clip.caption_override|default:"" }}</textarea>
-        <p class="meta mt-1">The rendered clip already has captions burned in with the client's style. Edit this text if a word needs correcting for the re-render.</p>
+        <p class="meta mt-1">The rendered clip already has kinetic captions burned in with the client's style. Edit this text if a word needs correcting for the re-render.</p>
       </div>
     </div>
 
     <div class="panel">
-      <div class="panel-head">Trim handles</div>
-      <div class="panel-body">
-        <div class="flex" style="gap:1rem">
-          <label class="field">In (s)
+      <div class="panel-head">Production &amp; Re-render Engine</div>
+      <div class="panel-body" style="display:flex;flex-direction:column;gap:0.75rem">
+        <div class="grid-2" style="gap:0.75rem">
+          <label class="field">Canvas Layout
+            <select id="template-select">
+              {% for val, label in templates %}
+              <option value="{{ val }}" {% if episode.project.default_template == val %}selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label class="field">Subtitle Style Template
+            <select id="caption-template-select">
+              {% for val, label in caption_templates %}
+              <option value="{{ val }}" {% if episode.project.caption_template == val %}selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+        </div>
+        <label class="field">Speaker Visual Filter (Contrast, Skin Vibrance &amp; Clarity)
+          <select id="video-filter-select">
+            {% for val, label in video_filters %}
+            <option value="{{ val }}" {% if episode.project.video_filter == val %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <div class="flex" style="gap:0.6rem">
+          <label class="field" style="flex:1">In (s)
             <input type="number" step="0.1" id="trim-in" value="{{ current.clip.start_time|floatformat:1 }}">
           </label>
-          <label class="field">Out (s)
+          <label class="field" style="flex:1">Out (s)
             <input type="number" step="0.1" id="trim-out" value="{{ current.clip.end_time|floatformat:1 }}">
           </label>
         </div>
-        <button class="btn sm mt-1" onclick="applyTrim()">Trim &amp; re-render this clip</button>
+        <div class="flex" style="align-items:center;justify-content:space-between">
+          <span class="meta" id="rerender-status">Re-renders with chosen subtitle template, white base font, custom pop word, zoom punch &amp; mastered audio.</span>
+          <button class="btn sm green" id="btn-rerender" onclick="applyTrim()">⚡ Re-render Clip</button>
+        </div>
       </div>
     </div>
 
@@ -121,9 +161,16 @@ function submitConfirm() {
 function applyTrim() {
   const start = parseFloat(document.getElementById('trim-in').value);
   const end = parseFloat(document.getElementById('trim-out').value);
+  const caption = document.getElementById('caption-text').value;
+  const template = document.getElementById('template-select').value;
+  const caption_template = document.getElementById('caption-template-select').value;
+  const video_filter = document.getElementById('video-filter-select') ? document.getElementById('video-filter-select').value : 'vivid_pop';
   if (!isFinite(start) || !isFinite(end) || end <= start) return;
-  const body = new URLSearchParams({ start, end });
-  document.getElementById('trim-out').disabled = true;
+  const body = new URLSearchParams({ start, end, caption, template, caption_template, video_filter });
+  const btn = document.getElementById('btn-rerender');
+  const status = document.getElementById('rerender-status');
+  if (btn) { btn.disabled = true; btn.innerText = "Rendering..."; }
+  if (status) { status.innerText = "Re-rendering with agency engine... please wait."; }
   fetch("{% url 'clip_trim' episode.pk current.clip.pk %}", {
     method: 'POST', body,
     headers: { 'X-CSRFToken': getCookie('csrftoken') }

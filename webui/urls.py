@@ -12,6 +12,7 @@ urlpatterns = [
     path("episodes/<int:episode_id>/clips/<int:clip_id>/delete/", views.clip_delete, name="clip_delete"),
     path("episodes/<int:episode_id>/render/", views.episode_render, name="episode_render"),
     path("episodes/<int:episode_id>/render-status/", views.render_status, name="render_status"),
+    path("episodes/<int:episode_id>/render-cancel/", views.render_cancel, name="render_cancel"),
     path("episodes/<int:episode_id>/review/", views.episode_review, name="episode_review"),
     path("episodes/<int:episode_id>/clips/<int:clip_id>/confirm/", views.clip_confirm, name="clip_confirm"),
     path("episodes/<int:episode_id>/clips/<int:clip_id>/trim/", views.clip_trim, name="clip_trim"),
@@ -23,5 +24,6 @@ urlpatterns = [
     re_path(r"^editor/(?P<path>.+)$", views.editor_app, name="editor_app"),
     path("exports/", views.freecut_exports, name="freecut_exports"),
     path("transcript/<str:video_id>/download/", views.download_transcript, name="download_transcript"),
+    path("episodes/<int:episode_id>/transcript/download/", views.download_episode_transcript, name="download_episode_transcript"),
     re_path(r"^output/(?P<filename>.+)$", views.serve_output, name="serve_output"),
 ]

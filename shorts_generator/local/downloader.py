@@ -25,14 +25,19 @@ def _import_ytdlp():
 
 
 def _format_for(fmt: str) -> str:
-    """Map our '720' / '1080' shorthand to a yt-dlp format selector."""
+    """Map our '720' / '1080' / 'best' shorthand to a yt-dlp format selector."""
+    if fmt == "best":
+        return "bestvideo+bestaudio/best"
     try:
         height = int(fmt)
     except ValueError:
-        height = 720
+        height = 1080
     return (
         f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/"
-        f"best[height<={height}][ext=mp4]/best"
+        f"bestvideo[height<={height}]+bestaudio/"
+        f"best[height<={height}][ext=mp4]/"
+        f"best[height<={height}]/"
+        f"best"
     )
 
 
@@ -84,11 +89,22 @@ def _resolve_local_path(source: str) -> Optional[str]:
     return None
 
 
-def _existing_download(out_dir: str, video_id: str) -> Optional[str]:
-    """Return a cached download path if we already have this YouTube id."""
+def _existing_download(out_dir: str, video_id: str, min_height: Optional[int] = None) -> Optional[str]:
+    """Return a cached download path if we already have this YouTube id and it satisfies resolution."""
+    import cv2
     for ext in (".mp4", ".mkv", ".webm"):
         candidate = os.path.join(out_dir, f"source_{video_id}{ext}")
         if os.path.exists(candidate):
+            if min_height is not None and min_height > 720:
+                try:
+                    cap = cv2.VideoCapture(candidate)
+                    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    cap.release()
+                    if h > 0 and h < min_height:
+                        print(f"[download/local] cached source is {h}p, but {min_height}p was requested. Upgrading download...", flush=True)
+                        continue
+                except Exception:
+                    pass
             return candidate
     return None
 
@@ -167,11 +183,32 @@ def _is_auth_error(exc: BaseException) -> bool:
     return any(hint in msg for hint in _AUTH_HINTS)
 
 
+import shutil
+
+
+def _find_node_path() -> Optional[str]:
+    """Locate the Node.js executable on the system."""
+    p = shutil.which("node")
+    if p and os.path.exists(p):
+        return str(Path(p).resolve())
+    for candidate in [
+        r"C:\Program Files\nodejs\node.exe",
+        r"C:\Program Files (x86)\nodejs\node.exe",
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\node\node.exe"),
+        os.path.expandvars(r"%APPDATA%\npm\node.cmd"),
+    ]:
+        if os.path.exists(candidate):
+            return str(Path(candidate).resolve())
+    return None
+
+
 def find_manual_cookies() -> Optional[str]:
-    """Look for a manually exported cookies.txt in the project root."""
+    """Look for a manually exported cookies.txt in the project root or output dir."""
     candidates = [
         Path("cookies.txt"),
         Path(".cookies"),
+        Path(__file__).resolve().parent.parent.parent / "cookies.txt",
+        Path(LOCAL_OUTPUT_DIR) / "cookies.txt",
     ]
     for c in candidates:
         if c.is_file():
@@ -199,6 +236,8 @@ _YOUTUBE_EXTRACTOR_ARGS = (
 
 
 def _make_ydl_opts(out_dir: str, fmt: str, hook=None, cookiefile: Optional[str] = None) -> dict:
+    node_path = _find_node_path()
+    js_runtimes = {"node": {"path": node_path} if node_path else {}}
     opts = {
         "format": _format_for(fmt),
         "outtmpl": os.path.join(out_dir, "source_%(id)s.%(ext)s"),
@@ -211,11 +250,9 @@ def _make_ydl_opts(out_dir: str, fmt: str, hook=None, cookiefile: Optional[str] 
         "file_access_retries": 10,
         "noplaylist": True,
         "http_headers": {"User-Agent": _CHROME_UA},
-        "extractor_args": {"youtube": {"player_client": ["tv", "web_embedded"]}},
-        # Node.js solves YouTube's JS challenges (n-sig etc). Without a JS
-        # runtime, web_embedded format extraction silently drops most formats
-        # and yields 403s. Deno is enabled by default when installed.
-        "js_runtimes": {"node": {}},
+        "extractor_args": {"youtube": {"player_client": ["tv", "web_embedded", "web"]}},
+        "remote_components": ["ejs:github"],
+        "js_runtimes": js_runtimes,
     }
     if hook is not None:
         opts["progress_hooks"] = [hook]
@@ -224,7 +261,12 @@ def _make_ydl_opts(out_dir: str, fmt: str, hook=None, cookiefile: Optional[str] 
     return opts
 
 
-def download_youtube_local(video_url: str, fmt: str = "720", cookies_path: Optional[str] = None) -> str:
+def download_youtube_local(
+    video_url: str,
+    fmt: str = "1080",
+    cookies_path: Optional[str] = None,
+    force: bool = False,
+) -> str:
     """Download a remote URL or return a local file path unchanged.
 
     Authentication fallback chain (in order):
@@ -242,8 +284,12 @@ def download_youtube_local(video_url: str, fmt: str = "720", cookies_path: Optio
     os.makedirs(out_dir, exist_ok=True)
 
     video_id = _extract_youtube_video_id(video_url)
-    if video_id:
-        cached = _existing_download(out_dir, video_id)
+    if video_id and not force:
+        try:
+            req_h = int(fmt)
+        except ValueError:
+            req_h = 1080 if fmt != "720" else 720
+        cached = _existing_download(out_dir, video_id, min_height=req_h)
         if cached:
             print(f"[download/local] reusing cached download: {cached}", flush=True)
             return cached
@@ -322,15 +368,12 @@ def download_youtube_local(video_url: str, fmt: str = "720", cookies_path: Optio
 
         # 4) All fallbacks exhausted
         raise RuntimeError(
-            "YouTube blocked the download (403). Fixes to try, in order:\n"
-            "  1. Make sure Node.js is installed (used to solve YouTube's JS\n"
-            "     challenges and generate PO tokens that bypass the 403):\n"
-            "       node --version\n"
-            "  2. Re-run; the pipeline already enables Node + PO tokens by default.\n"
-            "  3. If it still 403s, export cookies from a logged-in browser:\n"
-            "       python export_cookies.py firefox\n"
-            "     (Chrome/Edge 127+ use App-Bound encryption and cannot be\n"
-            "      auto-exported; see the script header for the manual option)"
+            "YouTube blocked the download (403 Forbidden). Troubleshooting steps:\n"
+            "  1. Node.js and EJS challenge solvers are enabled by default to solve player JS challenges.\n"
+            "  2. If the video is age-gated, region-locked, or requires sign-in:\n"
+            "     - In the WebUI: Click 'YouTube 403 / Age-Gate bypass (Optional cookies.txt)' in the Add Episode form and upload your exported cookies.txt file.\n"
+            "     - In the CLI: Pass --cookies cookies.txt or place cookies.txt in the project root.\n"
+            "  3. To export cookies: Use the free 'Get cookies.txt LOCALLY' extension in Chrome/Edge/Firefox while logged into YouTube."
         )
     finally:
         if not progress._done:

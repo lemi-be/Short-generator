@@ -98,7 +98,9 @@ def _transcript_for(video_id: str):
     srt_path = Path(settings.OUTPUT_DIR) / f"source_{video_id}.srt"
     if not srt_path.exists():
         return None
-    return _parse_srt(srt_path)
+    from shorts_generator.local.transcriber import _load_srt_cache
+    cached = _load_srt_cache(srt_path)
+    return cached.get("segments") or _parse_srt(srt_path)
 
 
 def _source_path(video_id: str) -> Path:
@@ -116,9 +118,15 @@ def _rendered_shorts(episode: Episode):
 
 def _caption_style(project: ClientProject) -> dict:
     return {
+        "caption_template": getattr(project, "caption_template", "hormozi_pop"),
         "font": project.caption_font,
         "color": project.caption_color,
         "position": project.caption_position,
+        "zoom_punch": getattr(project, "zoom_punch", True),
+        "master_audio": getattr(project, "master_audio", True),
+        "hook_card": getattr(project, "hook_card", True),
+        "podcast_solo_switch": getattr(project, "podcast_solo_switch", True),
+        "video_filter": getattr(project, "video_filter", "vivid_pop"),
     }
 
 
@@ -142,7 +150,7 @@ def _episode_state(episode: Episode):
     srt = Path(settings.OUTPUT_DIR) / f"source_{episode.video_id}.srt"
     clips = list(episode.clips.all())
     active = episode.render_jobs.exclude(
-        status__in=[RenderJob.STATUS_DONE, RenderJob.STATUS_FAILED]
+        status__in=[RenderJob.STATUS_DONE, RenderJob.STATUS_FAILED, RenderJob.STATUS_CANCELLED]
     ).first()
     shorts = _rendered_shorts(episode)
 
@@ -220,16 +228,24 @@ def project_new(request):
             return render(request, "webui/project_new.html", {
                 "tally": "red",
                 "error": "Client name is required.",
+                "caption_templates": ClientProject.CAPTION_TEMPLATE_CHOICES,
                 "fonts": ClientProject.CAPTION_FONT_CHOICES,
                 "positions": ClientProject.CAPTION_POSITION_CHOICES,
+                "video_filters": ClientProject.VIDEO_FILTER_CHOICES,
             })
         project = ClientProject.objects.create(
             name=name,
-            caption_font=request.POST.get("caption_font", "inter"),
-            caption_color=request.POST.get("caption_color", "#FFFFFF") or "#FFFFFF",
+            caption_template=request.POST.get("caption_template", "hormozi_pop"),
+            caption_font=request.POST.get("caption_font", "impact"),
+            caption_color=request.POST.get("caption_color", "#FFEA00") or "#FFEA00",
             caption_position=request.POST.get("caption_position", "lower_third"),
+            video_filter=request.POST.get("video_filter", "vivid_pop"),
             brand_lower_third=request.POST.get("brand_lower_third", "").strip(),
-            default_template=request.POST.get("default_template", "stage_solo_speaker"),
+            default_template=request.POST.get("default_template", "full_bleed_solo"),
+            zoom_punch="zoom_punch" in request.POST,
+            master_audio="master_audio" in request.POST,
+            hook_card="hook_card" in request.POST,
+            podcast_solo_switch="podcast_solo_switch" in request.POST,
         )
         # Optional branding logo upload.
         logo = request.FILES.get("brand_logo")
@@ -245,16 +261,34 @@ def project_new(request):
         return redirect("project_detail", project_id=project.pk)
     return render(request, "webui/project_new.html", {
         "tally": "amber",
+        "caption_templates": ClientProject.CAPTION_TEMPLATE_CHOICES,
         "fonts": ClientProject.CAPTION_FONT_CHOICES,
         "positions": ClientProject.CAPTION_POSITION_CHOICES,
+        "video_filters": ClientProject.VIDEO_FILTER_CHOICES,
         "error": "",
     })
 
 
 # ── Project detail / episodes ──────────────────────────────────────────
 
+@csrf_exempt
 def project_detail(request, project_id):
     project = get_object_or_404(ClientProject, pk=project_id)
+    if request.method == "POST" and request.POST.get("action") == "update_settings":
+        project.caption_template = request.POST.get("caption_template", project.caption_template)
+        project.caption_font = request.POST.get("caption_font", project.caption_font)
+        project.caption_color = request.POST.get("caption_color", project.caption_color)
+        project.caption_position = request.POST.get("caption_position", project.caption_position)
+        project.video_filter = request.POST.get("video_filter", project.video_filter)
+        project.default_template = request.POST.get("default_template", project.default_template)
+        project.brand_lower_third = request.POST.get("brand_lower_third", "").strip()
+        project.zoom_punch = "zoom_punch" in request.POST
+        project.master_audio = "master_audio" in request.POST
+        project.hook_card = "hook_card" in request.POST
+        project.podcast_solo_switch = "podcast_solo_switch" in request.POST
+        project.save()
+        return redirect(f"{reverse('project_detail', kwargs={'project_id': project.pk})}?msg={quote('Project settings updated.')}")
+
     episodes = []
     for ep in project.episodes.all():
         color, message, counts = _episode_state(ep)
@@ -267,6 +301,10 @@ def project_detail(request, project_id):
         "project": project,
         "episodes": episodes,
         "tally": rail,
+        "caption_templates": ClientProject.CAPTION_TEMPLATE_CHOICES,
+        "fonts": ClientProject.CAPTION_FONT_CHOICES,
+        "positions": ClientProject.CAPTION_POSITION_CHOICES,
+        "video_filters": ClientProject.VIDEO_FILTER_CHOICES,
         "error": request.GET.get("error", ""),
         "msg": request.GET.get("msg", ""),
     })
@@ -279,6 +317,7 @@ def episode_add(request, project_id):
         return redirect("project_detail", project_id=project.pk)
     url = request.POST.get("url", "").strip()
     local_path = request.POST.get("path", "").strip()
+    fmt = request.POST.get("fmt", "1080").strip() or "1080"
     if not url and not local_path:
         return redirect(f"{reverse('project_detail', kwargs={'project_id': project.pk})}?error={quote('Provide a YouTube URL or a local video file.')}")
 
@@ -288,8 +327,17 @@ def episode_add(request, project_id):
         from shorts_generator.local.downloader import download_youtube_local
         from shorts_generator.local.transcriber import transcribe_local
 
+        cookies_path = None
+        if "cookies_file" in request.FILES:
+            up_cookies = request.FILES["cookies_file"]
+            c_target = out_dir / "cookies.txt"
+            with open(c_target, "wb") as f:
+                for chunk in up_cookies.chunks():
+                    f.write(chunk)
+            cookies_path = str(c_target)
+
         if url:
-            source_path = Path(download_youtube_local(url, fmt="720"))
+            source_path = Path(download_youtube_local(url, fmt=fmt, cookies_path=cookies_path))
             video_id = source_path.stem.replace("source_", "", 1)
             if not str(source_path).startswith(str(out_dir)):
                 target = out_dir / f"source_{video_id}.mp4"
@@ -347,7 +395,7 @@ def episode_mark(request, episode_id):
 
     color, message, counts = _episode_state(episode)
     active_job = episode.render_jobs.exclude(
-        status__in=[RenderJob.STATUS_DONE, RenderJob.STATUS_FAILED]
+        status__in=[RenderJob.STATUS_DONE, RenderJob.STATUS_FAILED, RenderJob.STATUS_CANCELLED]
     ).first()
     return render(request, "webui/episode_mark.html", {
         "episode": episode,
@@ -404,12 +452,29 @@ def episode_render(request, episode_id):
         return redirect("episode_mark", episode_id=episode.pk)
     # Don't stack duplicate jobs for the same episode.
     active = episode.render_jobs.exclude(
-        status__in=[RenderJob.STATUS_DONE, RenderJob.STATUS_FAILED]
+        status__in=[RenderJob.STATUS_DONE, RenderJob.STATUS_FAILED, RenderJob.STATUS_CANCELLED]
     ).exists()
     if active:
         return redirect("episode_mark", episode_id=episode.pk)
     start_render_job(episode)
     return redirect("episode_mark", episode_id=episode.pk)
+
+
+@csrf_exempt
+def render_cancel(request, episode_id):
+    """Cancel any queued or running batch render for this episode."""
+    episode = get_object_or_404(Episode, pk=episode_id)
+    from .jobs import cancel_job_in_memory
+    active_jobs = episode.render_jobs.exclude(
+        status__in=[RenderJob.STATUS_DONE, RenderJob.STATUS_FAILED, RenderJob.STATUS_CANCELLED]
+    )
+    for job in active_jobs:
+        job.status = RenderJob.STATUS_CANCELLED
+        job.message = "Cancelled by user"
+        job.finished_at = timezone.now()
+        job.save(update_fields=["status", "message", "finished_at"])
+        cancel_job_in_memory(job.pk)
+    return JsonResponse({"ok": True, "status": "cancelled"})
 
 
 def render_status(request, episode_id):
@@ -455,6 +520,12 @@ def episode_review(request, episode_id):
     if current is None:
         current = next((c for c in clips if not c["clip"].confirmed), clips[-1])
     color = "green" if all(c["clip"].confirmed for c in clips) else "red"
+    templates = [
+        ("full_bleed_solo", "Full Bleed 9:16 (Edge-to-Edge)"),
+        ("blurred_backdrop", "Blurred Backdrop (Wide Focus)"),
+        ("stage_solo_speaker", "Stage Solo (Safe-Zone Padded)"),
+        ("podcast_split_screen", "Podcast Split Screen (Two Hosts)"),
+    ]
     return render(request, "webui/episode_review.html", {
         "episode": episode,
         "clips": clips,
@@ -462,6 +533,9 @@ def episode_review(request, episode_id):
         "current_idx": current["index"],
         "total": len(clips),
         "tally": color,
+        "templates": templates,
+        "caption_templates": ClientProject.CAPTION_TEMPLATE_CHOICES,
+        "video_filters": ClientProject.VIDEO_FILTER_CHOICES,
         "msg": request.GET.get("msg", ""),
     })
 
@@ -480,17 +554,37 @@ def clip_confirm(request, episode_id, clip_id):
 
 @csrf_exempt
 def clip_trim(request, episode_id, clip_id):
-    """Adjust a clip's in/out, then re-render just that clip synchronously."""
+    """Adjust a clip's in/out and settings, then re-render just that clip synchronously."""
     episode = get_object_or_404(Episode, pk=episode_id)
     clip = get_object_or_404(Clip, pk=clip_id, episode=episode)
     if request.method == "POST":
         try:
-            start = float(request.POST.get("start", ""))
-            end = float(request.POST.get("end", ""))
-            if end > start:
-                clip.start_time = start
-                clip.end_time = end
-                clip.save()
+            start_raw = request.POST.get("start")
+            end_raw = request.POST.get("end")
+            if start_raw is not None and end_raw is not None:
+                start = float(start_raw)
+                end = float(end_raw)
+                if end > start:
+                    clip.start_time = start
+                    clip.end_time = end
+            if "caption" in request.POST:
+                clip.caption_override = request.POST.get("caption", "").strip()
+            clip.save()
+
+            template_override = request.POST.get("template")
+            if template_override:
+                episode.project.default_template = template_override
+                episode.project.save(update_fields=["default_template"])
+
+            caption_tmpl_override = request.POST.get("caption_template")
+            if caption_tmpl_override:
+                episode.project.caption_template = caption_tmpl_override
+                episode.project.save(update_fields=["caption_template"])
+
+            video_filter_override = request.POST.get("video_filter")
+            if video_filter_override:
+                episode.project.video_filter = video_filter_override
+                episode.project.save(update_fields=["video_filter"])
         except (TypeError, ValueError):
             pass
     clips = sorted(episode.clips.all(), key=lambda c: c.start_time)
@@ -499,10 +593,10 @@ def clip_trim(request, episode_id, clip_id):
     try:
         from .jobs import render_one_clip
         render_one_clip(episode, clip, idx, out_path)
-        msg = "Clip trimmed and re-rendered."
+        msg = "Clip re-rendered with agency production engine."
     except Exception as exc:
         msg = f"Re-render failed: {exc}"
-    return redirect(f"{reverse('episode_review', kwargs={'episode_id': episode_id})}?msg={quote(msg)}")
+    return redirect(f"{reverse('episode_review', kwargs={'episode_id': episode_id})}?idx={idx}&msg={quote(msg)}")
 
 
 # ── Package & deliver ──────────────────────────────────────────────────
@@ -555,14 +649,82 @@ def episode_package(request, episode_id):
 
 def download_transcript(request, video_id):
     srt_path = Path(settings.OUTPUT_DIR) / f"source_{video_id}.srt"
-    if not srt_path.exists():
-        raise Http404()
-    response = FileResponse(
-        open(srt_path, "rb"),
-        content_type="text/plain",
-    )
-    response["Content-Disposition"] = f'attachment; filename="source_{video_id}.srt"'
-    return response
+    words_path = Path(settings.OUTPUT_DIR) / f"source_{video_id}.words.json"
+    if not srt_path.exists() and not words_path.exists():
+        raise Http404("Transcript not found for this video")
+
+    fmt = request.GET.get("format", "srt").lower().strip()
+
+    # Resolve friendly sanitized filename from title
+    title = _read_video_title(video_id)
+    if not title:
+        ep = Episode.objects.filter(video_id=video_id).first()
+        if ep and ep.title:
+            title = ep.title
+    clean_title = re.sub(r'[^\w\-_\. ]', '_', title).strip() if title else ""
+    clean_title = re.sub(r' +', '_', clean_title).strip('_')
+    base_name = f"{clean_title}_transcript" if clean_title else f"transcript_{video_id}"
+
+    if fmt in ("txt", "text", "clean"):
+        include_ts = fmt != "clean" and request.GET.get("timestamps", "1") != "0"
+        lines = []
+        if srt_path.exists():
+            from shorts_generator.local.transcriber import _load_srt_cache
+            cached = _load_srt_cache(srt_path)
+            segments = cached.get("segments") or _parse_srt(srt_path)
+            for s in segments:
+                if include_ts:
+                    ts_str = _fmt_ts(s["start"]).split(",")[0]
+                    lines.append(f"[{ts_str}] {s['text']}")
+                else:
+                    lines.append(s["text"])
+        elif words_path.exists():
+            data = json.loads(words_path.read_text(encoding="utf-8"))
+            for seg in data:
+                if isinstance(seg, list) and seg:
+                    seg_text = " ".join(w.get("word", "") for w in seg)
+                    if include_ts:
+                        ts_str = _fmt_ts(seg[0].get("start", 0)).split(",")[0]
+                        lines.append(f"[{ts_str}] {seg_text}")
+                    else:
+                        lines.append(seg_text)
+        content = "\n".join(lines)
+        response = HttpResponse(content, content_type="text/plain; charset=utf-8")
+        response["Content-Disposition"] = f'attachment; filename="{base_name}.txt"'
+        return response
+
+    elif fmt == "json":
+        if words_path.exists():
+            response = FileResponse(
+                open(words_path, "rb"),
+                content_type="application/json",
+            )
+        elif srt_path.exists():
+            segments = _parse_srt(srt_path)
+            response = HttpResponse(
+                json.dumps(segments, indent=2),
+                content_type="application/json; charset=utf-8",
+            )
+        else:
+            raise Http404()
+        response["Content-Disposition"] = f'attachment; filename="{base_name}.json"'
+        return response
+
+    else:
+        # Default: SRT
+        if not srt_path.exists():
+            raise Http404("SRT transcript not found")
+        response = FileResponse(
+            open(srt_path, "rb"),
+            content_type="text/plain; charset=utf-8",
+        )
+        response["Content-Disposition"] = f'attachment; filename="{base_name}.srt"'
+        return response
+
+
+def download_episode_transcript(request, episode_id):
+    episode = get_object_or_404(Episode, pk=episode_id)
+    return download_transcript(request, episode.video_id)
 
 
 def _file_response(request, path: Path, content_type: str) -> HttpResponse:
