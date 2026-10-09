@@ -1,1 +1,0 @@
-function e(e,t){e.forEach(e=>{e.reject(t)}),e.clear()}function t(e){let t=null,n=null;function r(){let r=e.createWorker();return n=e.setupWorker?.(r)??null,t=r,r}function i(){return t??r()}function a(){return t}function o(){if(!t)return;let e=t;t=null;try{n?.()}finally{n=null,e.terminate()}}return{getWorker:i,peekWorker:a,terminate:o}}export{e as n,t};
