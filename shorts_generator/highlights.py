@@ -14,11 +14,15 @@ import json
 import re
 from typing import Callable, Dict, List, Optional
 
-from . import muapi
 from .progress import Progress
 
 
 LLMFn = Callable[[str], str]
+
+
+def _default_llm_fn(prompt: str) -> str:
+    from .local.llm import call_local_llm
+    return call_local_llm(prompt)
 
 
 CONTENT_TYPE_PROMPT = """Analyze this video transcript sample and classify the content type.
@@ -75,31 +79,6 @@ MIN_CLIP_SECONDS = 30
 MAX_CLIP_SECONDS = 60
 
 
-def call_muapi_llm(prompt: str) -> str:
-    """Default LLM backend: MuAPI gpt-5-mini."""
-    result = muapi.run(
-        "gpt-5-mini",
-        {"prompt": prompt},
-        label="gpt-5-mini",
-        timeout=GPT_CALL_TIMEOUT_SECONDS,
-    )
-
-    outputs = result.get("outputs")
-    if isinstance(outputs, list) and outputs and isinstance(outputs[0], str) and outputs[0].strip():
-        return outputs[0]
-
-    for key in ("output", "text", "response", "result", "content"):
-        v = result.get(key)
-        if isinstance(v, str) and v.strip():
-            return v
-        if isinstance(v, dict):
-            inner = v.get("text") or v.get("content")
-            if isinstance(inner, str) and inner.strip():
-                return inner
-        if isinstance(v, list) and v and isinstance(v[0], str):
-            return v[0]
-
-    raise RuntimeError(f"Could not extract gpt-5-mini text from response: {result}")
 
 
 def _parse_json_loose(raw: str) -> Dict:
@@ -187,12 +166,13 @@ def _sanitize_highlights(
     return cleaned
 
 
-def detect_content_type(transcript: Dict, llm_fn: LLMFn = call_muapi_llm) -> Dict[str, str]:
+def detect_content_type(transcript: Dict, llm_fn: Optional[LLMFn] = None) -> Dict[str, str]:
+    fn = llm_fn or _default_llm_fn
     segments = transcript.get("segments", [])
     sample = " ".join(s["text"] for s in segments[:25])[:3000]
     prompt = f"{CONTENT_TYPE_PROMPT}\n\nTranscript sample:\n{sample}"
     try:
-        raw = llm_fn(prompt)
+        raw = fn(prompt)
         return _parse_json_loose(raw)
     except Exception:
         return {"content_type": "other", "density": "medium"}
@@ -230,12 +210,13 @@ def call_highlight_api(
     duration: float,
     num_clips: int,
     is_chunk: bool = False,
-    llm_fn: LLMFn = call_muapi_llm,
+    llm_fn: Optional[LLMFn] = None,
     min_clip_seconds: float = MIN_CLIP_SECONDS,
     max_clip_seconds: float = MAX_CLIP_SECONDS,
 ) -> Dict:
+    fn = llm_fn or _default_llm_fn
     # Ask for ~2× the user's target so dedupe has headroom, but cap so the model
-    # doesn't have to generate a huge JSON payload (which times out gpt-5-mini).
+    # doesn't have to generate a huge JSON payload (which times out the LLM).
     target = max(num_clips * 2, 5)
     natural_max = max(2 if is_chunk else 3, int(duration / 90))
     min_clips = min(target, natural_max, 8)
@@ -250,7 +231,7 @@ def call_highlight_api(
     last_error = "unknown"
 
     for attempt in range(1, MAX_HIGHLIGHT_API_ATTEMPTS + 1):
-        raw = llm_fn(prompt)
+        raw = fn(prompt)
         try:
             parsed = _parse_json_loose(raw)
             highlights = _sanitize_highlights(
@@ -314,10 +295,10 @@ def get_highlights(
 ) -> Dict:
     """Main entry point — returns {highlights: [...]} sorted by score.
 
-    `llm_fn` swaps the underlying LLM. Defaults to MuAPI gpt-5-mini; local
-    mode passes in a local LLM-backed callable.
+    `llm_fn` swaps the underlying LLM. Defaults to the configured local LLM
+    (OpenAI, Gemini, or Ollama).
     """
-    llm_fn = llm_fn or call_muapi_llm
+    llm_fn = llm_fn or _default_llm_fn
     duration = transcript.get("duration", 0)
     print(f"[highlights] detecting content type...", flush=True)
     with Progress("Detecting content type", total=None):

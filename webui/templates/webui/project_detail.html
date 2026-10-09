@@ -70,15 +70,10 @@
         <label class="field">Active Spoken Word Color (Base is white)
           <input type="color" name="caption_color" value="{{ project.caption_color }}" style="height:2.1rem;padding:.1rem">
         </label>
-        <label class="field">Caption Position
-          <select name="caption_position">
-            {% for value, label in positions %}<option value="{{ value }}" {% if project.caption_position == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
-          </select>
+        <label class="field">Lower-third Branding
+          <input type="text" name="brand_lower_third" value="{{ project.brand_lower_third }}" placeholder="e.g. Acme Podcast">
         </label>
       </div>
-      <label class="field">Lower-third Branding
-        <input type="text" name="brand_lower_third" value="{{ project.brand_lower_third }}" placeholder="e.g. Acme Podcast">
-      </label>
       <div style="display:flex;flex-direction:column;gap:0.4rem;border-top:1px solid var(--line-hairline);padding-top:0.6rem">
         <label class="flex" style="align-items:center;gap:0.5rem;cursor:pointer">
           <input type="checkbox" name="zoom_punch" {% if project.zoom_punch %}checked{% endif %} style="width:auto">

@@ -19,10 +19,6 @@ urlpatterns = [
     path("episodes/<int:episode_id>/deliver/", views.episode_deliver, name="episode_deliver"),
     path("episodes/<int:episode_id>/package/", views.episode_package, name="episode_package"),
 
-    path("video/<str:video_id>/edit/", views.editor_shell, name="editor_shell"),
-    path("editor/", views.editor_app, {"path": ""}, name="editor_app"),
-    re_path(r"^editor/(?P<path>.+)$", views.editor_app, name="editor_app"),
-    path("exports/", views.freecut_exports, name="freecut_exports"),
     path("transcript/<str:video_id>/download/", views.download_transcript, name="download_transcript"),
     path("episodes/<int:episode_id>/transcript/download/", views.download_episode_transcript, name="download_episode_transcript"),
     re_path(r"^output/(?P<filename>.+)$", views.serve_output, name="serve_output"),

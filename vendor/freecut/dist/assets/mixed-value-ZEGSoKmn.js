@@ -1,1 +1,0 @@
-function e(e,t,n){if(e.length===0)return n;let r=e.map(e=>t(e)??n),i=r[0];return r.every(e=>typeof e==`number`&&typeof i==`number`?Math.abs(e-i)<.01:e===i)?i:`mixed`}export{e as t};

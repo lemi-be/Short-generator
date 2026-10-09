@@ -133,8 +133,7 @@ def render_one_clip(episode, clip, idx: int, out_path: Path, progress=None) -> N
         branding=_branding(episode.project),
     )
 
-    meta = out_path.with_suffix(".mp4.meta.json")
-    meta.write_text(json.dumps({
+    meta_content = json.dumps({
         "project_id": episode.project_id,
         "episode_id": episode.pk,
         "clip_id": clip.pk,
@@ -142,7 +141,9 @@ def render_one_clip(episode, clip, idx: int, out_path: Path, progress=None) -> N
         "source_start": clip.start_time,
         "source_end": clip.end_time,
         "caption_override": clip.caption_override,
-    }), encoding="utf-8")
+    })
+    (out_path.parent / f"{out_path.stem}.meta.json").write_text(meta_content, encoding="utf-8")
+    out_path.with_suffix(".mp4.meta.json").write_text(meta_content, encoding="utf-8")
 
 
 def run_render_job(job_id: int) -> None:
@@ -191,21 +192,6 @@ def run_render_job(job_id: int) -> None:
                     except Exception:
                         pass
                 raise
-
-        # Best-effort: register the batch in FreeCut's workspace for the
-        # advanced editor path.
-        try:
-            from shorts_generator.freecut_projects import sync_freecut_project
-            short_paths = [out_dir / _short_name(episode, i) for i in range(1, total + 1)]
-            sync_freecut_project(
-                out_dir,
-                episode.video_id,
-                episode.title or episode.video_id,
-                [p for p in short_paths if p.exists()],
-                transcript=_load_transcript(episode),
-            )
-        except Exception:
-            pass  # never break delivery because the editor sync failed
 
         job.status = RenderJob.STATUS_DONE
         job.progress = 100
