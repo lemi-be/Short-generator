@@ -1,7 +1,11 @@
 -r requirements.txt
 
 # Optional dependencies for --mode local.
-yt-dlp>=2024.1.1
+# yt-dlp[default] pulls yt-dlp-ejs (JS challenge solver scripts) required for
+# YouTube downloads since Nov 2025. The bgutil PO-token provider plugin plus a
+# Node.js runtime (>=20) bypass the 403 bot-block without cookies.
+yt-dlp[default]>=2025.11.12
+bgutil-ytdlp-pot-provider>=1.3.0
 faster-whisper>=1.0.0
 openai>=1.0.0
 google-genai>=1.0.0

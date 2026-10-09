@@ -1,0 +1,157 @@
+{% extends "webui/base.html" %}
+{% block title %}{{ project.name }} — Short Factory{% endblock %}
+{% block content %}
+<div class="flex" style="margin-bottom:.9rem">
+  <a href="{% url 'home' %}" class="meta">&larr;</a>
+  <h1>{{ project.name }}</h1>
+  <span class="spacer" style="flex:1"></span>
+  <a class="btn ghost" href="{% url 'project_new' %}" title="New project">+ New project</a>
+</div>
+
+{% if error %}<div class="msg-error">{{ error }}</div>{% endif %}
+{% if msg %}<div class="msg-success">{{ msg }}</div>{% endif %}
+
+<div class="panel mb-1">
+  <div class="panel-head flex" style="align-items:center;justify-content:space-between">
+    <span>Agency Production Engine</span>
+    <div class="flex" style="gap:0.4rem">
+      <span class="tally-chip green">🎨 {{ project.caption_template }}</span>
+      <span class="tally-chip green">⚡ {{ project.default_template }}</span>
+      <span class="tally-chip green">🔤 {{ project.caption_font }}</span>
+      {% if project.zoom_punch %}<span class="tally-chip green">🎯 1.15x Zoom</span>{% endif %}
+      {% if project.master_audio %}<span class="tally-chip green">🔊 -14 LUFS</span>{% endif %}
+      {% if project.hook_card %}<span class="tally-chip green">🪝 Hook Card</span>{% endif %}
+      {% if project.podcast_solo_switch %}<span class="tally-chip green">🎙️ Solo Switch</span>{% endif %}
+      <span class="tally-chip green">✨ {{ project.video_filter }}</span>
+    </div>
+  </div>
+  <details class="panel-body" style="cursor:pointer">
+    <summary style="font-weight:600;font-size:0.85rem;color:var(--text-muted);outline:none">Edit Client Production Defaults ▾</summary>
+    <form method="POST" action="{% url 'project_detail' project.pk %}" style="margin-top:0.8rem;display:flex;flex-direction:column;gap:0.8rem;max-width:560px">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="update_settings">
+      <label class="field">Subtitle Style Template
+        <select name="caption_template">
+          {% for value, label in caption_templates %}
+            <option value="{{ value }}" {% if project.caption_template == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <div class="grid-2" style="gap:0.8rem">
+        <label class="field">Canvas Template
+          <select name="default_template">
+            <option value="full_bleed_solo" {% if project.default_template == 'full_bleed_solo' %}selected{% endif %}>Full Bleed 9:16 (Solo Speaker)</option>
+            <option value="blurred_backdrop" {% if project.default_template == 'blurred_backdrop' %}selected{% endif %}>Blurred Backdrop (Context / Wide)</option>
+            <option value="stage_solo_speaker" {% if project.default_template == 'stage_solo_speaker' %}selected{% endif %}>Stage &amp; Solo Speaker</option>
+            <option value="podcast_split_screen" {% if project.default_template == 'podcast_split_screen' %}selected{% endif %}>Podcast &amp; Dialogue</option>
+          </select>
+        </label>
+        <label class="field">Speaker Visual Filter
+          <select name="video_filter">
+            {% for value, label in video_filters %}
+              <option value="{{ value }}" {% if project.video_filter == value %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      </div>
+      <div class="grid-2" style="gap:0.8rem">
+        <label class="field">Caption Font
+          <select name="caption_font">
+            {% for value, label in fonts %}<option value="{{ value }}" {% if project.caption_font == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+          </select>
+        </label>
+        <label class="field">Caption Position
+          <select name="caption_position">
+            {% for value, label in positions %}<option value="{{ value }}" {% if project.caption_position == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+          </select>
+        </label>
+      </div>
+      <div class="grid-2" style="gap:0.8rem">
+        <label class="field">Active Spoken Word Color (Base is white)
+          <input type="color" name="caption_color" value="{{ project.caption_color }}" style="height:2.1rem;padding:.1rem">
+        </label>
+        <label class="field">Caption Position
+          <select name="caption_position">
+            {% for value, label in positions %}<option value="{{ value }}" {% if project.caption_position == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+          </select>
+        </label>
+      </div>
+      <label class="field">Lower-third Branding
+        <input type="text" name="brand_lower_third" value="{{ project.brand_lower_third }}" placeholder="e.g. Acme Podcast">
+      </label>
+      <div style="display:flex;flex-direction:column;gap:0.4rem;border-top:1px solid var(--line-hairline);padding-top:0.6rem">
+        <label class="flex" style="align-items:center;gap:0.5rem;cursor:pointer">
+          <input type="checkbox" name="zoom_punch" {% if project.zoom_punch %}checked{% endif %} style="width:auto">
+          <span><strong>Dynamic Retention Zoom:</strong> 1.15x punch-ins on sentence cuts</span>
+        </label>
+        <label class="flex" style="align-items:center;gap:0.5rem;cursor:pointer">
+          <input type="checkbox" name="master_audio" {% if project.master_audio %}checked{% endif %} style="width:auto">
+          <span><strong>Broadcast Audio Mastering:</strong> -14 LUFS vocal clarity EQ</span>
+        </label>
+        <label class="flex" style="align-items:center;gap:0.5rem;cursor:pointer">
+          <input type="checkbox" name="hook_card" {% if project.hook_card %}checked{% endif %} style="width:auto">
+          <span><strong>Visual Hook Card:</strong> Opening headline badge (0.0 - 2.5s)</span>
+        </label>
+        <label class="flex" style="align-items:center;gap:0.5rem;cursor:pointer">
+          <input type="checkbox" name="podcast_solo_switch" {% if project.podcast_solo_switch %}checked{% endif %} style="width:auto">
+          <span><strong>Dynamic Podcast Solo Switcher:</strong> Periodic full-vertical solo cuts on talking host</span>
+        </label>
+      </div>
+      <div class="flex" style="justify-content:flex-end">
+        <button class="btn green sm" type="submit">Save Production Defaults</button>
+      </div>
+    </form>
+  </details>
+</div>
+
+<div class="panel mb-1">
+  <div class="panel-head">Add episode</div>
+  <form method="POST" action="{% url 'episode_add' project.pk %}" enctype="multipart/form-data" class="panel-body" style="display:flex;flex-direction:column;gap:.6rem">
+    {% csrf_token %}
+    <div class="flex" style="gap:.6rem;align-items:center">
+      <input type="text" name="url" placeholder="YouTube URL (https://youtu.be/...)" style="flex:3;min-width:220px">
+      <select name="fmt" style="flex:1;min-width:130px;padding:.4rem .55rem">
+        <option value="1080" selected>1080p Full HD</option>
+        <option value="720">720p Fast</option>
+        <option value="best">Highest (Best)</option>
+      </select>
+      <span class="meta">or</span>
+      <input type="text" name="path" placeholder="Local video file path" style="flex:3;min-width:220px">
+      <button class="btn amber" type="submit">Download &amp; transcribe</button>
+    </div>
+    <details style="font-size:.82rem;color:var(--text-muted);cursor:pointer;margin-top:.2rem">
+      <summary style="user-select:none;font-weight:500">YouTube 403 / Age-Gate bypass (Optional <code>cookies.txt</code>) ▾</summary>
+      <div style="padding-top:.5rem;display:flex;align-items:center;gap:.8rem;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:.4rem;font-size:.82rem">
+          <span>Upload cookies file:</span>
+          <input type="file" name="cookies_file" accept=".txt" style="font-size:.8rem;color:inherit">
+        </label>
+        <span class="meta" style="font-size:.78rem">Node.js + EJS challenge solver runs automatically. If blocked or restricted, provide an exported cookies.txt.</span>
+      </div>
+    </details>
+  </form>
+</div>
+
+<div class="panel">
+  {% for row in episodes %}
+  <a class="card-row" href="{% url 'episode_mark' row.episode.pk %}" style="text-decoration:none">
+    <span class="tally-dot {{ row.color }}"></span>
+    <div style="flex:1;min-width:0">
+      <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ row.episode.title|default:row.episode.video_id }}</div>
+      <div class="timecode">{{ row.episode.video_id }}</div>
+    </div>
+    {% if row.counts.unconfirmed %}<span class="tally-chip red">{{ row.counts.unconfirmed }} to review</span>{% endif %}
+    {% if row.counts.rendered %}<span class="tally-chip green">{{ row.counts.rendered }} rendered</span>{% endif %}
+    {% if row.episode.delivered %}<span class="tally-chip green">delivered</span>{% endif %}
+    <span class="meta">{{ row.message }}</span>
+    <div style="display:inline-flex;gap:.3rem" onclick="event.stopPropagation()">
+      <a class="btn sm ghost" href="{% url 'download_transcript' row.episode.video_id %}?format=srt" download title="Download transcript (.srt)" style="padding:0.2rem 0.5rem;font-size:0.75rem">⬇ SRT</a>
+      <a class="btn sm ghost" href="{% url 'download_transcript' row.episode.video_id %}?format=txt" download title="Download transcript (.txt)" style="padding:0.2rem 0.5rem;font-size:0.75rem">⬇ TXT</a>
+    </div>
+    <span style="color:var(--text-muted)">→</span>
+  </a>
+  {% empty %}
+  <div class="panel-body muted">No episodes yet. Add a YouTube URL or a local video file above.</div>
+  {% endfor %}
+</div>
+{% endblock %}

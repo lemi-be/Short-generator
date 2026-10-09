@@ -1,24 +1,30 @@
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 import time
+import zipfile
 from pathlib import Path
 
 from django.conf import settings
 from django.db import transaction
-from django.http import FileResponse, Http404, HttpResponse, HttpResponseRedirect, JsonResponse
-from django.shortcuts import redirect, render
+from django.http import FileResponse, Http404, HttpResponse, HttpResponseNotFound, HttpResponseRedirect, JsonResponse
+from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
+from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
+from urllib.parse import quote
 
-from .models import Clip
+from .models import ClientProject, Clip, Episode, RenderJob
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
+# ── Small formatting / fs helpers ──────────────────────────────────────
+
 def _fmt_ts(seconds: float) -> str:
-    """Convert float seconds to SRT format: HH:MM:SS,mmm"""
     total_ms = max(0, int(round(float(seconds) * 1000)))
     ms = total_ms % 1000
     total_s = total_ms // 1000
@@ -30,7 +36,6 @@ def _fmt_ts(seconds: float) -> str:
 
 
 def _parse_srt(path: Path):
-    """Return list of dicts: {index, start, end, text} from an SRT file."""
     text = path.read_text(encoding="utf-8")
     blocks = re.split(r"\n\s*\n", text.strip())
     segments = []
@@ -81,201 +86,650 @@ def _ffprobe(path: Path, entry: str = "format=duration"):
     return r.stdout.strip() if r.returncode == 0 else "0"
 
 
-def _get_video_status(video_id):
+def _read_video_title(video_id: str) -> str:
+    title_file = Path(settings.OUTPUT_DIR) / f"source_{video_id}.title"
+    try:
+        return title_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _transcript_for(video_id: str):
+    srt_path = Path(settings.OUTPUT_DIR) / f"source_{video_id}.srt"
+    if not srt_path.exists():
+        return None
+    from shorts_generator.local.transcriber import _load_srt_cache
+    cached = _load_srt_cache(srt_path)
+    return cached.get("segments") or _parse_srt(srt_path)
+
+
+def _source_path(video_id: str) -> Path:
+    return Path(settings.OUTPUT_DIR) / f"source_{video_id}.mp4"
+
+
+def _short_name(episode: Episode, idx: int) -> str:
+    return f"{episode.project.slug}_{episode.pk:04d}_clip{idx:02d}.mp4"
+
+
+def _rendered_shorts(episode: Episode):
     out = Path(settings.OUTPUT_DIR)
-    mp4 = out / f"source_{video_id}.mp4"
-    srt = out / f"source_{video_id}.srt"
-
-    status = []
-    if mp4.exists():
-        status.append(("downloaded", "Done"))
-    else:
-        return status  # nothing else possible
-
-    if srt.exists():
-        segs = _parse_srt(srt)
-        status.append(("transcribed", f"{len(segs)} segments"))
-
-    clips = Clip.objects.filter(video_id=video_id).count()
-    if clips:
-        status.append(("clips", f"{clips} clip{'s' if clips > 1 else ''}"))
-
-    shorts = list(out.glob(f"short_{video_id}_*.mp4"))
-    if shorts:
-        status.append(("generated", f"{len(shorts)} short{'s' if len(shorts) > 1 else ''}"))
-
-    return status
+    return sorted(out.glob(f"{episode.project.slug}_{episode.pk:04d}_clip*.mp4"))
 
 
-def _get_source_videos():
-    out_dir = Path(settings.OUTPUT_DIR)
-    videos = []
-    for f in sorted(out_dir.glob("source_*.mp4")):
-        vid = f.stem.replace("source_", "", 1)
-        dur = _ffprobe(f)
-        srt_path = out_dir / f"{f.stem}.srt"
-        srt_segments = _parse_srt(srt_path) if srt_path.exists() else []
-        videos.append(
-            {
-                "id": vid,
-                "filename": f.name,
-                "duration": float(dur) if dur else 0,
-                "srt_count": len(srt_segments),
-                "status_chain": _get_video_status(vid),
-            }
-        )
-    return videos
+def _caption_style(project: ClientProject) -> dict:
+    return {
+        "caption_template": getattr(project, "caption_template", "hormozi_pop"),
+        "font": project.caption_font,
+        "color": project.caption_color,
+        "position": project.caption_position,
+        "zoom_punch": getattr(project, "zoom_punch", True),
+        "master_audio": getattr(project, "master_audio", True),
+        "hook_card": getattr(project, "hook_card", True),
+        "podcast_solo_switch": getattr(project, "podcast_solo_switch", True),
+        "video_filter": getattr(project, "video_filter", "vivid_pop"),
+    }
 
 
-# ── Views ──────────────────────────────────────────────────────────
+def _branding(project: ClientProject) -> dict:
+    logo = None
+    if project.brand_logo:
+        candidate = Path(settings.OUTPUT_DIR) / "branding" / project.slug / "branding.png"
+        if candidate.exists():
+            logo = str(candidate)
+    return {
+        "logo": logo,
+        "lower_third": project.brand_lower_third,
+    }
+
+
+# ── Tally state ────────────────────────────────────────────────────────
+
+def _episode_state(episode: Episode):
+    """Return (color, message, counts) where color in {red, amber, green, off}."""
+    source = _source_path(episode.video_id)
+    srt = Path(settings.OUTPUT_DIR) / f"source_{episode.video_id}.srt"
+    clips = list(episode.clips.all())
+    active = episode.render_jobs.exclude(
+        status__in=[RenderJob.STATUS_DONE, RenderJob.STATUS_FAILED, RenderJob.STATUS_CANCELLED]
+    ).first()
+    shorts = _rendered_shorts(episode)
+
+    if active:
+        return "amber", f"rendering {active.progress}%", {"rendering": True}
+    if not source.exists():
+        return "off", "no source", {}
+    if not srt.exists():
+        return "red", "not transcribed", {}
+    if not clips:
+        return "red", "no clips marked", {"unmarked": 0, "clips": 0}
+    unconfirmed = sum(1 for c in clips if not c.confirmed)
+    if unconfirmed:
+        return "red", f"{unconfirmed} clip{'s' if unconfirmed != 1 else ''} to review", {
+            "unmarked": 0,
+            "clips": len(clips),
+            "unconfirmed": unconfirmed,
+            "rendered": len(shorts),
+        }
+    if episode.delivered:
+        return "green", "delivered", {"clips": len(clips), "rendered": len(shorts)}
+    return "green", "ready to deliver", {"clips": len(clips), "rendered": len(shorts)}
+
+
+def _project_state(project: ClientProject):
+    episodes = list(project.episodes.all())
+    if not episodes:
+        return "off", "no episodes", {}
+    order = {"red": 0, "amber": 1, "green": 2, "off": 3}
+    states = [_episode_state(ep) for ep in episodes]
+    worst = min(states, key=lambda s: order[s[0]])
+    color = worst[0]
+    message = f"{len(episodes)} episode{'s' if len(episodes) != 1 else ''}"
+    counts = {
+        "unmarked": sum(s[2].get("unconfirmed", 0) for s in states),
+        "rendering": sum(1 for s in states if s[2].get("rendering")),
+        "delivered": sum(1 for s in states if s[0] == "green"),
+    }
+    if color == "red":
+        message = f"{counts['unmarked']} clip{'s' if counts['unmarked'] != 1 else ''} to review"
+    elif color == "amber":
+        message = f"{counts['rendering']} rendering"
+    elif color == "green" and counts["delivered"] == len(episodes):
+        message = "all clear"
+    return color, message, counts
+
+
+# ── Home ───────────────────────────────────────────────────────────────
 
 def home(request):
-    return render(request, "webui/home.html", {"videos": _get_source_videos()})
-
-
-@csrf_exempt
-def download(request):
-    if request.method == "POST":
-        url = request.POST.get("url", "").strip()
-        if not url:
-            return redirect("home")
-        try:
-            from shorts_generator.local.downloader import download_youtube_local
-            download_youtube_local(url, fmt="720")
-        except Exception as e:
-            return render(request, "webui/home.html", {
-                "videos": _get_source_videos(),
-                "error": f"Download failed: {e}",
-            })
-    return redirect("home")
-
-
-@csrf_exempt
-def transcribe(request, video_id):
-    out = Path(settings.OUTPUT_DIR)
-    source = out / f"source_{video_id}.mp4"
-    if not source.exists():
-        return redirect("home")
-    try:
-        from shorts_generator.local.transcriber import transcribe_local
-        transcribe_local(str(source))
-    except Exception as e:
-        return render(request, "webui/home.html", {
-            "videos": _get_source_videos(),
-            "error": f"Transcribe failed: {e}",
-        })
-    return redirect("home")
-
-
-def clip_editor(request, video_id):
-    out_dir = Path(settings.OUTPUT_DIR)
-    source_path = out_dir / f"source_{video_id}.mp4"
-    srt_path = out_dir / f"source_{video_id}.srt"
-
-    if not source_path.exists():
-        return redirect("home")
-
-    segments = _parse_srt(srt_path) if srt_path.exists() else []
-    for seg in segments:
-        seg["ts"] = _fmt_ts(seg["start"])
-        seg["te"] = _fmt_ts(seg["end"])
-
-    clips = list(Clip.objects.filter(video_id=video_id))
-    for c in clips:
-        c.start_ts = _fmt_ts(c.start_time)
-        c.end_ts = _fmt_ts(c.end_time)
-        c.duration_ts = _fmt_ts(c.end_time - c.start_time)
-
-    duration = float(_ffprobe(source_path)) or 0
-    generated_shorts = sorted(out_dir.glob(f"short_{video_id}_*.mp4"))
-    msg = request.GET.get("msg", "")
-
-    return render(request, "webui/clip_editor.html", {
-        "video_id": video_id,
-        "filename": source_path.name,
-        "duration": duration,
-        "segments": segments,
-        "clips": clips,
-        "generated_shorts": generated_shorts,
-        "msg": msg,
+    projects = []
+    for p in ClientProject.objects.all():
+        color, message, counts = _project_state(p)
+        projects.append({"project": p, "color": color, "message": message, "counts": counts})
+    order = {"red": 0, "amber": 1, "green": 2, "off": 3}
+    projects.sort(key=lambda r: order[r["color"]])
+    rail = "red"
+    if projects:
+        rail = projects[0]["color"]
+    else:
+        rail = "green"
+    return render(request, "webui/home.html", {
+        "projects": projects,
+        "tally": rail,
+        "error": request.GET.get("error", ""),
+        "msg": request.GET.get("msg", ""),
     })
 
 
 @csrf_exempt
-@transaction.atomic
-def add_clip(request, video_id):
+def project_new(request):
     if request.method == "POST":
-        start = float(request.POST["start"])
-        end = float(request.POST["end"])
-        if end > start:
-            Clip.objects.create(video_id=video_id, start_time=start, end_time=end)
-    return HttpResponseRedirect(reverse("clip_editor", kwargs={"video_id": video_id}))
+        name = request.POST.get("name", "").strip()
+        if not name:
+            return render(request, "webui/project_new.html", {
+                "tally": "red",
+                "error": "Client name is required.",
+                "caption_templates": ClientProject.CAPTION_TEMPLATE_CHOICES,
+                "fonts": ClientProject.CAPTION_FONT_CHOICES,
+                "positions": ClientProject.CAPTION_POSITION_CHOICES,
+                "video_filters": ClientProject.VIDEO_FILTER_CHOICES,
+            })
+        project = ClientProject.objects.create(
+            name=name,
+            caption_template=request.POST.get("caption_template", "hormozi_pop"),
+            caption_font=request.POST.get("caption_font", "impact"),
+            caption_color=request.POST.get("caption_color", "#FFEA00") or "#FFEA00",
+            caption_position=request.POST.get("caption_position", "lower_third"),
+            video_filter=request.POST.get("video_filter", "vivid_pop"),
+            brand_lower_third=request.POST.get("brand_lower_third", "").strip(),
+            default_template=request.POST.get("default_template", "full_bleed_solo"),
+            zoom_punch="zoom_punch" in request.POST,
+            master_audio="master_audio" in request.POST,
+            hook_card="hook_card" in request.POST,
+            podcast_solo_switch="podcast_solo_switch" in request.POST,
+        )
+        # Optional branding logo upload.
+        logo = request.FILES.get("brand_logo")
+        if logo:
+            brand_dir = Path(settings.OUTPUT_DIR) / "branding" / project.slug
+            brand_dir.mkdir(parents=True, exist_ok=True)
+            dest = brand_dir / "branding.png"
+            with open(dest, "wb") as f:
+                for chunk in logo.chunks():
+                    f.write(chunk)
+            project.brand_logo = str(dest)
+            project.save(update_fields=["brand_logo"])
+        return redirect("project_detail", project_id=project.pk)
+    return render(request, "webui/project_new.html", {
+        "tally": "amber",
+        "caption_templates": ClientProject.CAPTION_TEMPLATE_CHOICES,
+        "fonts": ClientProject.CAPTION_FONT_CHOICES,
+        "positions": ClientProject.CAPTION_POSITION_CHOICES,
+        "video_filters": ClientProject.VIDEO_FILTER_CHOICES,
+        "error": "",
+    })
+
+
+# ── Project detail / episodes ──────────────────────────────────────────
+
+@csrf_exempt
+def project_detail(request, project_id):
+    project = get_object_or_404(ClientProject, pk=project_id)
+    if request.method == "POST" and request.POST.get("action") == "update_settings":
+        project.caption_template = request.POST.get("caption_template", project.caption_template)
+        project.caption_font = request.POST.get("caption_font", project.caption_font)
+        project.caption_color = request.POST.get("caption_color", project.caption_color)
+        project.caption_position = request.POST.get("caption_position", project.caption_position)
+        project.video_filter = request.POST.get("video_filter", project.video_filter)
+        project.default_template = request.POST.get("default_template", project.default_template)
+        project.brand_lower_third = request.POST.get("brand_lower_third", "").strip()
+        project.zoom_punch = "zoom_punch" in request.POST
+        project.master_audio = "master_audio" in request.POST
+        project.hook_card = "hook_card" in request.POST
+        project.podcast_solo_switch = "podcast_solo_switch" in request.POST
+        project.save()
+        return redirect(f"{reverse('project_detail', kwargs={'project_id': project.pk})}?msg={quote('Project settings updated.')}")
+
+    episodes = []
+    for ep in project.episodes.all():
+        color, message, counts = _episode_state(ep)
+        episodes.append({"episode": ep, "color": color, "message": message, "counts": counts})
+    rail = "red"
+    order = {"red": 0, "amber": 1, "green": 2, "off": 3}
+    if episodes:
+        rail = min((e["color"] for e in episodes), key=lambda c: order[c])
+    return render(request, "webui/project_detail.html", {
+        "project": project,
+        "episodes": episodes,
+        "tally": rail,
+        "caption_templates": ClientProject.CAPTION_TEMPLATE_CHOICES,
+        "fonts": ClientProject.CAPTION_FONT_CHOICES,
+        "positions": ClientProject.CAPTION_POSITION_CHOICES,
+        "video_filters": ClientProject.VIDEO_FILTER_CHOICES,
+        "error": request.GET.get("error", ""),
+        "msg": request.GET.get("msg", ""),
+    })
 
 
 @csrf_exempt
-@transaction.atomic
-def delete_clip(request, video_id, clip_id):
-    if request.method == "POST":
-        Clip.objects.filter(id=clip_id, video_id=video_id).delete()
-    return HttpResponseRedirect(reverse("clip_editor", kwargs={"video_id": video_id}))
-
-
-@csrf_exempt
-def generate(request, video_id):
-    clips = Clip.objects.filter(video_id=video_id)
-    if not clips.exists():
-        return redirect("clip_editor", video_id=video_id)
-
-    template = request.POST.get("template", "stage_solo_speaker")
+def episode_add(request, project_id):
+    project = get_object_or_404(ClientProject, pk=project_id)
+    if request.method != "POST":
+        return redirect("project_detail", project_id=project.pk)
+    url = request.POST.get("url", "").strip()
+    local_path = request.POST.get("path", "").strip()
+    fmt = request.POST.get("fmt", "1080").strip() or "1080"
+    if not url and not local_path:
+        return redirect(f"{reverse('project_detail', kwargs={'project_id': project.pk})}?error={quote('Provide a YouTube URL or a local video file.')}")
 
     out_dir = Path(settings.OUTPUT_DIR)
-    source_path = out_dir / f"source_{video_id}.mp4"
-    srt_path = out_dir / f"source_{video_id}.srt"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        from shorts_generator.local.downloader import download_youtube_local
+        from shorts_generator.local.transcriber import transcribe_local
 
-    transcript = None
-    if srt_path.exists():
-        from shorts_generator.local.transcriber import _load_srt_cache
-        transcript = _load_srt_cache(srt_path)
+        cookies_path = None
+        if "cookies_file" in request.FILES:
+            up_cookies = request.FILES["cookies_file"]
+            c_target = out_dir / "cookies.txt"
+            with open(c_target, "wb") as f:
+                for chunk in up_cookies.chunks():
+                    f.write(chunk)
+            cookies_path = str(c_target)
 
-    generated = []
-    errors = []
-    for i, clip in enumerate(clips):
-        out_path = out_dir / f"short_{video_id}_c{clip.id:04d}.mp4"
+        if url:
+            source_path = Path(download_youtube_local(url, fmt=fmt, cookies_path=cookies_path))
+            video_id = source_path.stem.replace("source_", "", 1)
+            if not str(source_path).startswith(str(out_dir)):
+                target = out_dir / f"source_{video_id}.mp4"
+                if not target.exists() or target.stat().st_size != source_path.stat().st_size:
+                    shutil.copy2(source_path, target)
+                source_path = target
+        else:
+            src = Path(local_path).expanduser()
+            if not src.exists():
+                raise RuntimeError(f"Local file not found: {local_path}")
+            video_id = re.sub(r"[^A-Za-z0-9_-]", "_", src.stem)
+            target = out_dir / f"source_{video_id}.mp4"
+            if not target.exists() or target.stat().st_size != src.stat().st_size:
+                shutil.copy2(src, target)
+            source_path = target
+
+        transcript = transcribe_local(str(source_path))
+        if not transcript.get("segments"):
+            raise RuntimeError("Whisper produced no segments.")
+
+        title = _read_video_title(video_id)
+        episode = Episode.objects.create(
+            project=project,
+            video_id=video_id,
+            title=title or video_id,
+            source_file=str(source_path),
+        )
+        return redirect("episode_mark", episode_id=episode.pk)
+    except Exception as exc:
+        return redirect(f"{reverse('project_detail', kwargs={'project_id': project.pk})}?error={quote(str(exc))}")
+
+
+# ── Mark clips ─────────────────────────────────────────────────────────
+
+def episode_mark(request, episode_id):
+    episode = get_object_or_404(Episode, pk=episode_id)
+    segments = _transcript_for(episode.video_id)
+    if segments is None:
+        return render(request, "webui/episode_mark.html", {
+            "episode": episode,
+            "segments": [],
+            "clips": [],
+            "tally": "red",
+            "error": "No transcript found. Re-add the episode to transcribe it.",
+        })
+    for seg in segments:
+        seg["ts"] = _fmt_ts(seg["start"])
+        seg["te"] = _fmt_ts(seg["end"])
+
+    clips = list(episode.clips.all())
+    for c in clips:
+        c.start_ts = _fmt_ts(c.start_time)
+        c.end_ts = _fmt_ts(c.end_time)
+        c.duration_ts = _fmt_ts(c.duration)
+
+    color, message, counts = _episode_state(episode)
+    active_job = episode.render_jobs.exclude(
+        status__in=[RenderJob.STATUS_DONE, RenderJob.STATUS_FAILED, RenderJob.STATUS_CANCELLED]
+    ).first()
+    return render(request, "webui/episode_mark.html", {
+        "episode": episode,
+        "segments": segments,
+        "clips": clips,
+        "tally": color,
+        "state_message": message,
+        "active_job": active_job,
+        "msg": request.GET.get("msg", ""),
+    })
+
+
+@csrf_exempt
+def clip_add(request, episode_id):
+    episode = get_object_or_404(Episode, pk=episode_id)
+    if request.method == "POST":
         try:
-            from shorts_generator.local.clipper import _clip_local_segments, crop_clip_local
-            segments = (
-                _clip_local_segments(transcript, clip.start_time, clip.end_time)
-                if transcript
-                else None
+            start = float(request.POST.get("start", ""))
+            end = float(request.POST.get("end", ""))
+            if end > start:
+                Clip.objects.create(episode=episode, start_time=start, end_time=end)
+                return JsonResponse({"ok": True})
+        except (TypeError, ValueError):
+            return JsonResponse({"ok": False, "error": "bad times"}, status=400)
+    return JsonResponse({"ok": False}, status=405)
+
+
+@csrf_exempt
+def clip_delete(request, episode_id, clip_id):
+    episode = get_object_or_404(Episode, pk=episode_id)
+    if request.method == "POST":
+        Clip.objects.filter(pk=clip_id, episode=episode).delete()
+        return JsonResponse({"ok": True})
+    return JsonResponse({"ok": False}, status=405)
+
+
+# ── Async batch render ─────────────────────────────────────────────────
+
+def start_render_job(episode: Episode) -> RenderJob:
+    from .jobs import run_render_job
+    job = RenderJob.objects.create(episode=episode, status=RenderJob.STATUS_QUEUED)
+    from threading import Thread
+    t = Thread(target=run_render_job, args=(job.pk,), daemon=True)
+    t.start()
+    return job
+
+
+@csrf_exempt
+def episode_render(request, episode_id):
+    episode = get_object_or_404(Episode, pk=episode_id)
+    if request.method != "POST":
+        return redirect("episode_mark", episode_id=episode.pk)
+    if not episode.clips.exists():
+        return redirect("episode_mark", episode_id=episode.pk)
+    # Don't stack duplicate jobs for the same episode.
+    active = episode.render_jobs.exclude(
+        status__in=[RenderJob.STATUS_DONE, RenderJob.STATUS_FAILED, RenderJob.STATUS_CANCELLED]
+    ).exists()
+    if active:
+        return redirect("episode_mark", episode_id=episode.pk)
+    start_render_job(episode)
+    return redirect("episode_mark", episode_id=episode.pk)
+
+
+@csrf_exempt
+def render_cancel(request, episode_id):
+    """Cancel any queued or running batch render for this episode."""
+    episode = get_object_or_404(Episode, pk=episode_id)
+    from .jobs import cancel_job_in_memory
+    active_jobs = episode.render_jobs.exclude(
+        status__in=[RenderJob.STATUS_DONE, RenderJob.STATUS_FAILED, RenderJob.STATUS_CANCELLED]
+    )
+    for job in active_jobs:
+        job.status = RenderJob.STATUS_CANCELLED
+        job.message = "Cancelled by user"
+        job.finished_at = timezone.now()
+        job.save(update_fields=["status", "message", "finished_at"])
+        cancel_job_in_memory(job.pk)
+    return JsonResponse({"ok": True, "status": "cancelled"})
+
+
+def render_status(request, episode_id):
+    episode = get_object_or_404(Episode, pk=episode_id)
+    job = episode.render_jobs.first()
+    if job is None:
+        return JsonResponse({"status": "none"})
+    return JsonResponse({
+        "status": job.status,
+        "progress": job.progress,
+        "message": job.message,
+        "error": job.error,
+        "finished": job.finished_at.isoformat() if job.finished_at else None,
+    })
+
+
+# ── Quick clip review ──────────────────────────────────────────────────
+
+def _review_clips(episode: Episode):
+    """Return [{clip, short_url, size, index}] for rendered clips."""
+    clips = list(episode.clips.all())
+    out = []
+    for i, clip in enumerate(clips, 1):
+        name = _short_name(episode, i)
+        path = Path(settings.OUTPUT_DIR) / name
+        short_url = reverse("serve_output", args=[name]) if path.exists() else None
+        size = path.stat().st_size if path.exists() else 0
+        out.append({"clip": clip, "short_url": short_url, "size": size, "index": i})
+    return out
+
+
+def episode_review(request, episode_id):
+    episode = get_object_or_404(Episode, pk=episode_id)
+    clips = _review_clips(episode)
+    if not clips:
+        return redirect("episode_mark", episode_id=episode.pk)
+    # Stepper: honor ?idx, else first unconfirmed clip, else last.
+    try:
+        wanted = int(request.GET.get("idx", "") or 0)
+        current = next((c for c in clips if c["index"] == wanted), None)
+    except ValueError:
+        current = None
+    if current is None:
+        current = next((c for c in clips if not c["clip"].confirmed), clips[-1])
+    color = "green" if all(c["clip"].confirmed for c in clips) else "red"
+    templates = [
+        ("full_bleed_solo", "Full Bleed 9:16 (Edge-to-Edge)"),
+        ("blurred_backdrop", "Blurred Backdrop (Wide Focus)"),
+        ("stage_solo_speaker", "Stage Solo (Safe-Zone Padded)"),
+        ("podcast_split_screen", "Podcast Split Screen (Two Hosts)"),
+    ]
+    return render(request, "webui/episode_review.html", {
+        "episode": episode,
+        "clips": clips,
+        "current": current,
+        "current_idx": current["index"],
+        "total": len(clips),
+        "tally": color,
+        "templates": templates,
+        "caption_templates": ClientProject.CAPTION_TEMPLATE_CHOICES,
+        "video_filters": ClientProject.VIDEO_FILTER_CHOICES,
+        "msg": request.GET.get("msg", ""),
+    })
+
+
+@csrf_exempt
+def clip_confirm(request, episode_id, clip_id):
+    clip = get_object_or_404(Clip, pk=clip_id, episode_id=episode_id)
+    if request.method == "POST":
+        clip.confirmed = True
+        if request.POST.get("caption", "").strip():
+            clip.caption_override = request.POST.get("caption", "").strip()
+        clip.save()
+        return redirect("episode_review", episode_id=episode_id)
+    return redirect("episode_review", episode_id=episode_id)
+
+
+@csrf_exempt
+def clip_trim(request, episode_id, clip_id):
+    """Adjust a clip's in/out and settings, then re-render just that clip synchronously."""
+    episode = get_object_or_404(Episode, pk=episode_id)
+    clip = get_object_or_404(Clip, pk=clip_id, episode=episode)
+    if request.method == "POST":
+        try:
+            start_raw = request.POST.get("start")
+            end_raw = request.POST.get("end")
+            if start_raw is not None and end_raw is not None:
+                start = float(start_raw)
+                end = float(end_raw)
+                if end > start:
+                    clip.start_time = start
+                    clip.end_time = end
+            if "caption" in request.POST:
+                clip.caption_override = request.POST.get("caption", "").strip()
+            clip.save()
+
+            template_override = request.POST.get("template")
+            if template_override:
+                episode.project.default_template = template_override
+                episode.project.save(update_fields=["default_template"])
+
+            caption_tmpl_override = request.POST.get("caption_template")
+            if caption_tmpl_override:
+                episode.project.caption_template = caption_tmpl_override
+                episode.project.save(update_fields=["caption_template"])
+
+            video_filter_override = request.POST.get("video_filter")
+            if video_filter_override:
+                episode.project.video_filter = video_filter_override
+                episode.project.save(update_fields=["video_filter"])
+        except (TypeError, ValueError):
+            pass
+    clips = sorted(episode.clips.all(), key=lambda c: c.start_time)
+    idx = clips.index(clip) + 1
+    out_path = Path(settings.OUTPUT_DIR) / _short_name(episode, idx)
+    try:
+        from .jobs import render_one_clip
+        render_one_clip(episode, clip, idx, out_path)
+        msg = "Clip re-rendered with agency production engine."
+    except Exception as exc:
+        msg = f"Re-render failed: {exc}"
+    return redirect(f"{reverse('episode_review', kwargs={'episode_id': episode_id})}?idx={idx}&msg={quote(msg)}")
+
+
+# ── Package & deliver ──────────────────────────────────────────────────
+
+def episode_deliver(request, episode_id):
+    episode = get_object_or_404(Episode, pk=episode_id)
+    clips = _review_clips(episode)
+    color, message, counts = _episode_state(episode)
+    zip_rel = f"deliveries/{episode.project.slug}/{episode.pk:04d}_batch.zip"
+    return render(request, "webui/episode_deliver.html", {
+        "episode": episode,
+        "clips": clips,
+        "tally": color if episode.delivered else "amber",
+        "zip_rel": zip_rel,
+        "zip_exists": (Path(settings.OUTPUT_DIR) / zip_rel).exists(),
+        "msg": request.GET.get("msg", ""),
+    })
+
+
+@csrf_exempt
+def episode_package(request, episode_id):
+    episode = get_object_or_404(Episode, pk=episode_id)
+    if request.method != "POST":
+        return redirect("episode_deliver", episode_id=episode.pk)
+
+    out_dir = Path(settings.OUTPUT_DIR)
+    delivery_dir = out_dir / "deliveries" / episode.project.slug / f"{episode.pk:04d}"
+    delivery_dir.mkdir(parents=True, exist_ok=True)
+
+    copied = []
+    for i, clip in enumerate(sorted(episode.clips.all(), key=lambda c: c.start_time), 1):
+        name = _short_name(episode, i)
+        src = out_dir / name
+        if src.exists():
+            dest = delivery_dir / f"{episode.project.slug}_{episode.pk:04d}_clip{i:02d}.mp4"
+            shutil.copy2(src, dest)
+            copied.append(dest)
+
+    zip_path = out_dir / "deliveries" / episode.project.slug / f"{episode.pk:04d}_batch.zip"
+    if copied:
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for f in copied:
+                zf.write(f, arcname=f.name)
+        episode.delivered = True
+        episode.save(update_fields=["delivered"])
+    return redirect(f"{reverse('episode_deliver', kwargs={'episode_id': episode.pk})}?msg={quote('Packaged & marked delivered.')}")
+
+
+# ── Transcript / output serving ────────────────────────────────────────
+
+def download_transcript(request, video_id):
+    srt_path = Path(settings.OUTPUT_DIR) / f"source_{video_id}.srt"
+    words_path = Path(settings.OUTPUT_DIR) / f"source_{video_id}.words.json"
+    if not srt_path.exists() and not words_path.exists():
+        raise Http404("Transcript not found for this video")
+
+    fmt = request.GET.get("format", "srt").lower().strip()
+
+    # Resolve friendly sanitized filename from title
+    title = _read_video_title(video_id)
+    if not title:
+        ep = Episode.objects.filter(video_id=video_id).first()
+        if ep and ep.title:
+            title = ep.title
+    clean_title = re.sub(r'[^\w\-_\. ]', '_', title).strip() if title else ""
+    clean_title = re.sub(r' +', '_', clean_title).strip('_')
+    base_name = f"{clean_title}_transcript" if clean_title else f"transcript_{video_id}"
+
+    if fmt in ("txt", "text", "clean"):
+        include_ts = fmt != "clean" and request.GET.get("timestamps", "1") != "0"
+        lines = []
+        if srt_path.exists():
+            from shorts_generator.local.transcriber import _load_srt_cache
+            cached = _load_srt_cache(srt_path)
+            segments = cached.get("segments") or _parse_srt(srt_path)
+            for s in segments:
+                if include_ts:
+                    ts_str = _fmt_ts(s["start"]).split(",")[0]
+                    lines.append(f"[{ts_str}] {s['text']}")
+                else:
+                    lines.append(s["text"])
+        elif words_path.exists():
+            data = json.loads(words_path.read_text(encoding="utf-8"))
+            for seg in data:
+                if isinstance(seg, list) and seg:
+                    seg_text = " ".join(w.get("word", "") for w in seg)
+                    if include_ts:
+                        ts_str = _fmt_ts(seg[0].get("start", 0)).split(",")[0]
+                        lines.append(f"[{ts_str}] {seg_text}")
+                    else:
+                        lines.append(seg_text)
+        content = "\n".join(lines)
+        response = HttpResponse(content, content_type="text/plain; charset=utf-8")
+        response["Content-Disposition"] = f'attachment; filename="{base_name}.txt"'
+        return response
+
+    elif fmt == "json":
+        if words_path.exists():
+            response = FileResponse(
+                open(words_path, "rb"),
+                content_type="application/json",
             )
-            crop_clip_local(
-                str(source_path),
-                clip.start_time,
-                clip.end_time,
-                str(out_path),
-                template=template,
-                segments=segments,
+        elif srt_path.exists():
+            segments = _parse_srt(srt_path)
+            response = HttpResponse(
+                json.dumps(segments, indent=2),
+                content_type="application/json; charset=utf-8",
             )
-            generated.append(str(out_path.name))
-        except Exception as e:
-            errors.append(f"clip {i + 1} ({clip.start_time:.1f}-{clip.end_time:.1f}s): {e}")
+        else:
+            raise Http404()
+        response["Content-Disposition"] = f'attachment; filename="{base_name}.json"'
+        return response
 
-    msg = f"Generated {len(generated)} short{'s' if len(generated) != 1 else ''} (template: {template})"
-    if errors:
-        details = "; ".join(errors)
-        msg += f", {len(errors)} failed: {details}"
-    return HttpResponseRedirect(f"{reverse('clip_editor', kwargs={'video_id': video_id})}?msg={msg}")
+    else:
+        # Default: SRT
+        if not srt_path.exists():
+            raise Http404("SRT transcript not found")
+        response = FileResponse(
+            open(srt_path, "rb"),
+            content_type="text/plain; charset=utf-8",
+        )
+        response["Content-Disposition"] = f'attachment; filename="{base_name}.srt"'
+        return response
 
 
-def serve_output(request, filename):
-    path = Path(settings.OUTPUT_DIR) / filename
-    if not path.exists() or not path.is_file():
-        raise Http404()
+def download_episode_transcript(request, episode_id):
+    episode = get_object_or_404(Episode, pk=episode_id)
+    return download_transcript(request, episode.video_id)
 
+
+def _file_response(request, path: Path, content_type: str) -> HttpResponse:
     size = path.stat().st_size
-    content_type = _mime_for(path.name)
     range_header = request.META.get("HTTP_RANGE", "")
-
     if range_header:
         m = re.match(r"bytes=(\d*)-(\d*)", range_header.strip())
         if m:
@@ -296,22 +750,9 @@ def serve_output(request, filename):
             response["Content-Length"] = str(length)
             response["Accept-Ranges"] = "bytes"
             return response
-
     response = FileResponse(open(path, "rb"), content_type=content_type)
     response["Content-Length"] = str(size)
     response["Accept-Ranges"] = "bytes"
-    return response
-
-
-def download_transcript(request, video_id):
-    srt_path = Path(settings.OUTPUT_DIR) / f"source_{video_id}.srt"
-    if not srt_path.exists():
-        raise Http404()
-    response = FileResponse(
-        open(srt_path, "rb"),
-        content_type="text/plain",
-    )
-    response["Content-Disposition"] = f'attachment; filename="source_{video_id}.srt"'
     return response
 
 
@@ -331,384 +772,128 @@ def _mime_for(name: str) -> str:
         return "audio/ogg"
     if ext in (".srt",):
         return "text/plain"
+    if ext == ".zip":
+        return "application/zip"
+    if ext in (".png",):
+        return "image/png"
+    if ext in (".jpg", ".jpeg"):
+        return "image/jpeg"
     return "application/octet-stream"
 
 
-def _ffmpeg_quote(text: str) -> str:
-    """Escape text for use as a single-quoted filtergraph value.
-
-    Inside filtergraph single quotes, a literal quote is escaped by closing,
-    writing \\', and reopening. '%' must be escaped because drawtext expands
-    printf-style tokens. Backslashes are passed through untouched.
-    """
-    return "'" + text.replace("'", "'\\''").replace("%", "\\%") + "'"
-
-
-def _fontfile_value(bold: bool = True) -> str:
-    """Return a filtergraph-escaped Windows font path (single backslash before ':').
-
-    drawtext requires the drive colon to be escaped (\:) but the backslash must
-    stay a single character, so this is built directly instead of via _ffmpeg_quote.
-    """
-    return "'C\\:/Windows/Fonts/arialbd.ttf'" if bold else "'C\\:/Windows/Fonts/arial.ttf'"
-
-
-def _hex_to_alpha(hex_color: str, alpha: float) -> str:
-    """Convert '#rrggbb' + alpha 0..1 into ffmpeg's '0xrrggbbaa' boxcolor form."""
-    hex_color = (hex_color or "#000000").lstrip("#")
-    if len(hex_color) == 3:
-        hex_color = "".join(c * 2 for c in hex_color)
-    if len(hex_color) < 6:
-        hex_color = (hex_color + "000000")[:6]
-    a = int(max(0.0, min(1.0, float(alpha))) * 255)
-    return f"0x{hex_color}{a:02X}"
-
-
-def _video_dims(path: Path):
-    """Return (width, height) of the first video stream, defaulting to 1080x1920."""
-    r = subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", "v:0",
-         "-show_entries", "stream=width,height", "-of", "csv=p=0", str(path)],
-        capture_output=True, text=True,
-        creationflags=subprocess.CREATE_NO_WINDOW,
-    )
-    try:
-        w, h = r.stdout.strip().split(",")
-        return int(w), int(h)
-    except (ValueError, IndexError):
-        return 1080, 1920
-
-
-def _render_with_layers(
-    src: Path,
-    start: float,
-    end: float,
-    dst: Path,
-    text_layers: list,
-    audio_layers: list,
-    out_dir: Path,
-    logo: dict = None,
-    cuts: list = None,
-    source_volume: float = 1.0,
-    ducking: bool = False,
-) -> None:
-    """Refine src to [start,end]: text hooks, watermark overlay, cut ranges,
-    background-audio mixing with optional ducking, and source-volume control.
-
-    All timestamps (text layers, cuts) are on the FULL-CLIP time axis and are
-    shifted by *start* internally. The video filtergraph runs text + logo
-    BEFORE the cut filter, so any overlay that overlaps a cut region is removed
-    along with the footage — matching what the user sees on the range bar.
-
-    text_layers: [{text, start, end, x, y, size, color, bgColor, bgAlpha,
-                   bold, stroke, strokeColor, strokeAlpha, uppercase, animation}]
-                  x/y are center-anchor percentages (0-100).
-    audio_layers: [{file, start, volume}]  (file = filename under OUTPUT_DIR)
-    logo: {file, x, y, scale, opacity}  (x/y = top-left percentages)
-    cuts: [[start, end], ...]           (full-clip time, non-overlapping)
-    """
-    duration = end - start
-
-    extra_inputs = []  # every additional -i (audio files, then logo images)
-
-    def _add_input(path: Path) -> int:
-        extra_inputs.append(str(path))
-        return len(extra_inputs)  # 1-based index (0 is the source)
-
-    fc_parts = []
-
-    # ================= Video chain =================
-    cur = "[0:v]"  # cursor label; every step appends an output label
-    has_vfilter = False
-    vstep_n = 0
-
-    def _video_step(chain: str) -> None:
-        nonlocal cur, has_vfilter, vstep_n
-        lbl = f"[vt{vstep_n}]"
-        vstep_n += 1
-        fc_parts.append(cur + chain + lbl)
-        cur = lbl
-        has_vfilter = True
-
-    text_draws = []
-    for layer in text_layers:
-        t0 = max(0.0, float(layer.get("start", 0)) - start)
-        t1 = min(duration, float(layer.get("end", duration)) - start)
-        if t1 <= t0:
-            continue
-        text = str(layer.get("text", "")).strip()
-        if not text:
-            continue
-        if layer.get("uppercase"):
-            text = text.upper()
-        size = int(float(layer.get("size", 48) or 48))
-        color = str(layer.get("color", "white") or "white")
-        bold = bool(layer.get("bold"))
-        font = _fontfile_value(bold)
-        box_color = _hex_to_alpha(
-            str(layer.get("bgColor", "#000000") or "#000000"),
-            float(layer.get("bgAlpha", 0.45) or 0.45),
-        )
-        x = float(layer.get("x", 50) or 50)
-        y = float(layer.get("y", 12) or 12)
-        pad = int(float(layer.get("pad", 16) or 16))
-        x_expr = f"w*{x / 100:.6f}-text_w/2"
-        y_expr = f"h*{y / 100:.6f}-th/2"
-        d = (
-            f"drawtext=fontfile={font}"
-            f":text={_ffmpeg_quote(text)}"
-            f":fontsize={size}:fontcolor={_ffmpeg_quote(color)}"
-            f":box=1:boxcolor={_ffmpeg_quote(box_color)}:boxborderw={pad}"
-        )
-        stroke = int(float(layer.get("stroke", 0) or 0))
-        if stroke > 0:
-            stroke_color = _hex_to_alpha(
-                str(layer.get("strokeColor", "#000000") or "#000000"),
-                float(layer.get("strokeAlpha", 0.9) or 0.9),
-            )
-            d += f":borderw={stroke}:bordercolor={_ffmpeg_quote(stroke_color)}"
-        d += f":x={_ffmpeg_quote(x_expr)}:y={_ffmpeg_quote(y_expr)}"
-        d += f":enable={_ffmpeg_quote(f'between(t,{t0:.3f},{t1:.3f})')}"
-        if str(layer.get("animation", "")) == "pop":
-            d += f":alpha={_ffmpeg_quote(f'clip((t-{t0:.3f})/0.3,0,1)')}"
-        text_draws.append(d)
-
-    if text_draws:
-        _video_step(",".join(text_draws))
-
-    if logo and logo.get("file"):
-        logo_path = out_dir / str(logo["file"])
-        if logo_path.exists():
-            canvas_w, canvas_h = _video_dims(src)
-            scale = float(logo.get("scale", 0.12) or 0.12)
-            opacity = float(logo.get("opacity", 1.0) or 1.0)
-            px_w = max(4, int(canvas_w * scale))
-            x = int(canvas_w * (float(logo.get("x", 3) or 3) / 100.0))
-            y = int(canvas_h * (float(logo.get("y", 3) or 3) / 100.0))
-            idx = _add_input(logo_path)
-            if opacity >= 1.0:
-                fc_parts.append(f"[{idx}:v]scale={px_w}:-1:flags=lanczos[lg]")
-            else:
-                fc_parts.append(
-                    f"[{idx}:v]scale={px_w}:-1:flags=lanczos,format=rgba,"
-                    f"colorchannelmixer=aa={opacity:.3f}[lg]"
-                )
-            _video_step(f"[lg]overlay={x}:{y}")
-
-    # Cut ranges compact the timeline (video + audio) AFTER overlays.
-    # Cuts arrive on the full-clip axis; shift to draft-local time (t=0 at
-    # trim start) to match the post-`-ss` filter timeline.
-    local_cuts = []
-    if cuts:
-        for s, e in cuts:
-            ls = max(0.0, s - start)
-            le = min(duration, e - start)
-            if le > ls + 0.05:
-                local_cuts.append((ls, le))
-
-    if local_cuts:
-        cut_expr = "+".join(f"between(t,{s:.3f},{e:.3f})" for s, e in local_cuts)
-        _video_step(f"select='not({cut_expr})',setpts=N/FRAME_RATE/TB")
-
-    # The final output must be labelled [vout] for -map.
-    if has_vfilter and cur != "[vout]":
-        fc_parts.append(f"{cur}null[vout]")
-
-    # ================= Audio chain =================
-    bgm_labels = []
-    for i, layer in enumerate(audio_layers):
-        audio_file = str(layer.get("file", ""))
-        if not audio_file:
-            continue
-        audio_path = out_dir / audio_file
-        if not audio_path.exists():
-            continue
-        lstart = float(layer.get("start", 0))
-        volume = float(layer.get("volume", 1.0) or 1.0)
-        delay_ms = int(max(0, lstart - start) * 1000)
-        idx = _add_input(audio_path)
-        lbl = f"abgm{i}"
-        bgm_labels.append(lbl)
-        fc_parts.append(
-            f"[{idx}:a]volume={volume:.3f},adelay={delay_ms}:all=1,apad[{lbl}]"
-        )
-
-    needs_audio = bool(bgm_labels) or bool(local_cuts) or abs(source_volume - 1.0) > 1e-6
-    if needs_audio:
-        src_chain = f"[0:a]atrim=0:{duration:.3f}"
-        if abs(source_volume - 1.0) > 1e-6:
-            src_chain += f",volume={source_volume:.3f}"
-        src_chain += ",asetpts=PTS-STARTPTS[a_src]"
-        fc_parts.append(src_chain)
-
-        if bgm_labels:
-            mixed_labels = []
-            if ducking:
-                for lbl in bgm_labels:
-                    fc_parts.append(
-                        f"[{lbl}][a_src]sidechaincompress=threshold=0.03:ratio=6:"
-                        f"attack=20:release=250[{lbl}_d]"
-                    )
-                    mixed_labels.append(f"[{lbl}_d]")
-            else:
-                mixed_labels = [f"[{lbl}]" for lbl in bgm_labels]
-            fc_parts.append(
-                f"[a_src]{''.join(mixed_labels)}amix=inputs={1 + len(bgm_labels)}:"
-                f"duration=first:dropout_transition=2[amix]"
-            )
-            final_audio = "[amix]"
-        else:
-            final_audio = "[a_src]"
-
-        if local_cuts:
-            cut_expr = "+".join(f"between(t,{s:.3f},{e:.3f})" for s, e in local_cuts)
-            fc_parts.append(
-                f"{final_audio}aselect='not({cut_expr})',asetpts=N/SR/TB[aout]"
-            )
-            final_audio = "[aout]"
-        else:
-            fc_parts.append(f"{final_audio}anull[aout]")
-            final_audio = "[aout]"
-
-    has_afilter = needs_audio
-
-    cmd = ["ffmpeg", "-y", "-loglevel", "error"]
-    # -ss/-t MUST precede -i so they act as INPUT options. As output options
-    # they do not reliably limit a filter_complex-mapped output duration.
-    cmd += ["-ss", f"{start:.3f}", "-t", f"{duration:.3f}", "-i", str(src)]
-    for extra in extra_inputs:
-        cmd += ["-i", str(extra)]
-
-    if fc_parts:
-        cmd += ["-filter_complex", ";".join(fc_parts)]
-    cmd += ["-map", "[vout]" if has_vfilter else "0:v"]
-    cmd += ["-map", "[aout]" if has_afilter else "0:a"]
-    cmd += [
-        "-c:v", "libx264", "-preset", "fast", "-crf", "20",
-        "-c:a", "aac", "-b:a", "128k",
-        "-movflags", "+faststart",
-        str(dst),
-    ]
-    subprocess.run(cmd, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
-
-
-@csrf_exempt
-def upload_audio(request, video_id):
-    """Store an uploaded audio file under output/audio_layers/ for use as a layer."""
-    if request.method != "POST" or not request.FILES.get("file"):
-        return JsonResponse({"error": "no file"}, status=400)
-
-    f = request.FILES["file"]
-    name = re.sub(r"[^A-Za-z0-9._-]", "_", f.name)
-    sub = Path(settings.OUTPUT_DIR) / "audio_layers"
-    sub.mkdir(parents=True, exist_ok=True)
-    safe = f"{int(time.time())}_{name}"
-    dest = sub / safe
-    with open(dest, "wb") as out:
-        for chunk in f.chunks():
-            out.write(chunk)
-    return JsonResponse({"file": f"audio_layers/{safe}", "url": reverse("serve_output", args=[f"audio_layers/{safe}"])})
-
-
-@csrf_exempt
-def upload_logo(request, video_id):
-    """Store an uploaded logo/watermark image under output/logos/."""
-    if request.method != "POST" or not request.FILES.get("file"):
-        return JsonResponse({"error": "no file"}, status=400)
-
-    f = request.FILES["file"]
-    name = re.sub(r"[^A-Za-z0-9._-]", "_", f.name)
-    sub = Path(settings.OUTPUT_DIR) / "logos"
-    sub.mkdir(parents=True, exist_ok=True)
-    safe = f"{int(time.time())}_{name}"
-    dest = sub / safe
-    with open(dest, "wb") as out:
-        for chunk in f.chunks():
-            out.write(chunk)
-    return JsonResponse({"file": f"logos/{safe}", "url": reverse("serve_output", args=[f"logos/{safe}"])})
-
-
-@csrf_exempt
-def trim_short(request, video_id, filename):
-    """Trimmer page for a generated short + POST handler that re-cuts it."""
-    out_dir = Path(settings.OUTPUT_DIR)
-    src = out_dir / filename
-    if not src.exists():
+def serve_output(request, filename):
+    path = Path(settings.OUTPUT_DIR) / filename
+    if not path.exists() or not path.is_file():
         raise Http404()
+    return _file_response(request, path, _mime_for(path.name))
 
-    if request.method == "POST":
-        duration = float(_ffprobe(src)) or 0
-        start = max(0.0, min(float(request.POST.get("start", 0) or 0), duration))
-        end = max(start, min(float(request.POST.get("end", 0) or 0), duration))
-        if end - start < 0.1:
-            return HttpResponseRedirect(reverse("clip_editor", kwargs={"video_id": video_id}) + "?msg=Trim failed: end must be after start")
 
-        text_layers = []
-        audio_layers = []
-        logo = None
-        cuts = []
-        ducking = False
-        source_volume = 1.0
-        raw = request.POST.get("layers", "")
-        if raw:
+# ── FreeCut browser editor (advanced mode) ─────────────────────────────
+
+_EDITOR_MIME = {
+    ext: ct
+    for ext, ct in [
+        (".html", "text/html; charset=utf-8"),
+        (".js", "text/javascript; charset=utf-8"),
+        (".mjs", "text/javascript; charset=utf-8"),
+        (".css", "text/css; charset=utf-8"),
+        (".json", "application/json"),
+        (".map", "application/json"),
+        (".webmanifest", "application/manifest+json"),
+        (".svg", "image/svg+xml"),
+        (".png", "image/png"),
+        (".jpg", "image/jpeg"),
+        (".jpeg", "image/jpeg"),
+        (".webp", "image/webp"),
+        (".gif", "image/gif"),
+        (".avif", "image/avif"),
+        (".ico", "image/x-icon"),
+        (".wasm", "application/wasm"),
+        (".woff", "font/woff"),
+        (".woff2", "font/woff2"),
+        (".ttf", "font/ttf"),
+        (".otf", "font/otf"),
+        (".onnx", "application/octet-stream"),
+        (".bin", "application/octet-stream"),
+        (".mp3", "audio/mpeg"),
+        (".wav", "audio/wav"),
+    ]
+}
+
+
+def _isolated_headers(response):
+    response["Cross-Origin-Opener-Policy"] = "same-origin"
+    response["Cross-Origin-Embedder-Policy"] = "require-corp"
+    response["Cross-Origin-Resource-Policy"] = "same-origin"
+    return response
+
+
+def _collect_exports():
+    ws = Path(settings.FREECUT_WORKSPACE)
+    exports = []
+    if ws.is_dir():
+        for p in ws.glob("projects/*/exports/*.mp4"):
             try:
-                layers = json.loads(raw)
-                text_layers = layers.get("text", []) or []
-                audio_layers = layers.get("audio", []) or []
-                logo = layers.get("logo") or None
-                ducking = bool(layers.get("ducking", False))
-                source_volume = float(layers.get("source_volume", 1.0) or 1.0)
-                for c in layers.get("cuts", []) or []:
-                    try:
-                        s, e = float(c[0]), float(c[1])
-                    except (ValueError, TypeError, IndexError):
-                        continue
-                    if e > s + 0.05:
-                        cuts.append([s, e])
-            except (ValueError, AttributeError, TypeError):
-                pass
-
-        # Normalise cuts: clamp, sort, merge overlaps (all on the full-clip axis).
-        cuts.sort()
-        merged_cuts = []
-        for s, e in cuts:
-            s = max(0.0, min(s, duration))
-            e = max(0.0, min(e, duration))
-            if e <= s:
+                st = p.stat()
+            except OSError:
                 continue
-            if merged_cuts and s < merged_cuts[-1][1]:
-                merged_cuts[-1][1] = max(merged_cuts[-1][1], e)
-            else:
-                merged_cuts.append([s, e])
+            exports.append({
+                "name": p.name,
+                "path": str(p.relative_to(ws)).replace("\\", "/"),
+                "size": st.st_size,
+                "mtime": st.st_mtime,
+            })
+    exports.sort(key=lambda e: e["mtime"], reverse=True)
+    return exports
 
-        stem = src.stem
-        trimmed = out_dir / f"{stem}_trimmed.mp4"
-        n = 1
-        while trimmed.exists():
-            trimmed = out_dir / f"{stem}_trimmed_{n}.mp4"
-            n += 1
-        _render_with_layers(
-            src, start, end, trimmed,
-            text_layers, audio_layers, out_dir,
-            logo=logo, cuts=merged_cuts,
-            source_volume=source_volume, ducking=ducking,
-        )
-        bits = []
-        if text_layers:
-            bits.append(f"{len(text_layers)} text")
-        if logo:
-            bits.append("watermark")
-        if audio_layers:
-            bits.append(f"{len(audio_layers)} audio")
-        if merged_cuts:
-            bits.append(f"{len(merged_cuts)} cut{'s' if len(merged_cuts) > 1 else ''}")
-        extra = f" ({', '.join(bits)})" if bits else ""
-        msg = f"Rendered {filename} {start:.1f}s-{end:.1f}s{extra} -> {trimmed.name}"
-        return HttpResponseRedirect(reverse("clip_editor", kwargs={"video_id": video_id}) + f"?msg={msg}")
 
-    duration = float(_ffprobe(src)) or 0
-    return render(request, "webui/trim_short.html", {
+def freecut_exports(request):
+    return JsonResponse({"exports": _collect_exports()})
+
+
+@csrf_exempt
+def editor_app(request, path=""):
+    dist = Path(settings.FREECUT_DIST)
+    if not dist.is_dir():
+        return _isolated_headers(HttpResponse(
+            "FreeCut editor build is missing. Rebuild it with "
+            "`npm ci && npm run build` in vendor/freecut.",
+            status=500,
+        ))
+    rel = (path or "index.html").replace("\\", "/")
+    if rel.startswith("/") or ".." in rel.split("/"):
+        return _isolated_headers(HttpResponseNotFound("not found"))
+    target = (dist / rel).resolve()
+    if not str(target).startswith(str(dist.resolve())):
+        return _isolated_headers(HttpResponseNotFound("not found"))
+    if target.is_dir():
+        target = target / "index.html"
+    if target.is_file():
+        content_type = _EDITOR_MIME.get(target.suffix.lower(), "application/octet-stream")
+        return _isolated_headers(_file_response(request, target, content_type))
+    if not target.suffix:
+        index_html = dist / "index.html"
+        if index_html.is_file():
+            return _isolated_headers(_file_response(
+                request, index_html, _EDITOR_MIME[".html"]))
+    return _isolated_headers(HttpResponseNotFound("not found"))
+
+
+def editor_shell(request, video_id):
+    out_dir = Path(settings.OUTPUT_DIR)
+    source_path = out_dir / f"source_{video_id}.mp4"
+    if not source_path.exists():
+        return redirect("home")
+    source_url = reverse("serve_output", args=[source_path.name])
+    return _isolated_headers(render(request, "webui/editor_shell.html", {
         "video_id": video_id,
-        "filename": filename,
-        "duration": duration,
-    })
+        "filename": source_path.name,
+        "duration": float(_ffprobe(source_path)) or 0,
+        "source_url": source_url,
+        "has_srt": (out_dir / f"source_{video_id}.srt").exists(),
+        "srt_url": reverse("download_transcript", args=[video_id]),
+        "workspace": str(Path(settings.FREECUT_WORKSPACE)),
+        "editor_url": reverse("editor_app"),
+        "editor_start_url": reverse("editor_app") + "projects",
+        "exports": _collect_exports(),
+    }))

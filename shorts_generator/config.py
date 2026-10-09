@@ -7,6 +7,9 @@ load_dotenv()
 MUAPI_API_KEY = os.getenv("MUAPI_API_KEY", "").strip()
 MUAPI_BASE_URL = os.getenv("MUAPI_BASE_URL", "https://api.muapi.ai/api/v1").rstrip("/")
 
+# Optional — powers the Stock / B-roll panel in the web editor (Pexels Video API).
+PEXELS_API_KEY = os.getenv("PEXELS_API_KEY", "").strip()
+
 POLL_INTERVAL_SECONDS = float(os.getenv("MUAPI_POLL_INTERVAL", "5"))
 POLL_TIMEOUT_SECONDS = float(os.getenv("MUAPI_POLL_TIMEOUT", "600"))
 
@@ -20,7 +23,7 @@ LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai").strip().lower()
 LOCAL_WHISPER_MODEL = os.getenv("LOCAL_WHISPER_MODEL", "base")
 LOCAL_WHISPER_DEVICE = os.getenv("LOCAL_WHISPER_DEVICE", "auto")  # auto / cpu / cuda
 LOCAL_OUTPUT_DIR = os.getenv("LOCAL_OUTPUT_DIR", "output")
-TEMPLATE = os.getenv("TEMPLATE", "stage_solo_speaker").strip().lower()
+TEMPLATE = os.getenv("TEMPLATE", "full_bleed_solo").strip().lower()
 
 # VAD (Voice Activity Detection) settings for faster-whisper
 # Default threshold is 0.5; lower = more sensitive, higher = less sensitive

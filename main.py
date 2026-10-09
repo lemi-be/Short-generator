@@ -29,12 +29,14 @@ def main() -> int:
         help="local (default, yt-dlp + faster-whisper + LLM provider + ffmpeg) or api (MuAPI, kept for reference).",
     )
     parser.add_argument("--num-clips", type=int, default=10, help="How many shorts to render (default: 10)")
-    parser.add_argument("--format", default="720", help="Source download resolution: 360 / 480 / 720 / 1080 (default: 720)")
+    parser.add_argument("--format", default="1080", help="Source download resolution: 360 / 480 / 720 / 1080 / best (default: 1080)")
     parser.add_argument("--language", default=None, help="Force Whisper language code, e.g. 'en' (default: auto-detect)")
     parser.add_argument("--max-clip-seconds", type=int, default=60, help="Hard cap on rendered clip length in seconds (default: 60, max 60). Clips longer than this from the LLM are truncated to start_time + N.")
     parser.add_argument("--min-clip-seconds", type=int, default=30, help="Minimum clip length in seconds (default: 30). Clips shorter than this are dropped — short-form feeds don't retain sub-30s clips.")
     parser.add_argument("--template", default=None, choices=list(TEMPLATE_SPECS.keys()), help="Cropping template (see TEMPLATE_SPECS in clipper.py)")
+    parser.add_argument("--burn-captions", action="store_true", help="Burn word-by-word captions into the rendered frames (default: off — captions are styled as layers in the editor and baked at export time)")
     parser.add_argument("--output-json", default=None, help="Write the full result JSON to this path")
+    parser.add_argument("--cookies", default=None, help="Path to a cookies.txt file for YouTube authentication (bypasses browser prompt)")
     args = parser.parse_args()
 
     try:
@@ -47,6 +49,8 @@ def main() -> int:
             max_clip_seconds=args.max_clip_seconds,
             min_clip_seconds=args.min_clip_seconds,
             template=args.template,
+            burn_captions=args.burn_captions,
+            cookies_path=args.cookies,
         )
     except Exception as e:
         print(f"\nFAILED: {e}", file=sys.stderr)

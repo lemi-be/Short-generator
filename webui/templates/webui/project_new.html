@@ -1,0 +1,84 @@
+{% extends "webui/base.html" %}
+{% block title %}New project — Short Factory{% endblock %}
+{% block content %}
+<a href="{% url 'home' %}" class="meta" style="margin-bottom:.75rem;display:inline-block">&larr; Back to projects</a>
+<h1 style="margin-bottom:.9rem">New project</h1>
+
+{% if error %}<div class="msg-error">{{ error }}</div>{% endif %}
+
+<form method="POST" action="{% url 'project_new' %}" enctype="multipart/form-data" style="max-width:520px">
+  {% csrf_token %}
+  <div class="panel" style="display:flex;flex-direction:column;gap:1rem;padding:1rem">
+    <label class="field">Client name
+      <input type="text" name="name" placeholder="e.g. Acme Podcast" required autofocus>
+    </label>
+    <label class="field">Subtitle Style Template
+      <select name="caption_template">
+        {% for value, label in caption_templates %}
+          <option value="{{ value }}" {% if value == 'hormozi_pop' %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+      <span class="meta" style="font-size:0.75rem">Company subtitle template with tailored typography, pop scale, and styling.</span>
+    </label>
+    <label class="field">Caption font
+      <select name="caption_font">
+        {% for value, label in fonts %}<option value="{{ value }}" {% if value == 'impact' %}selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="field">Active word highlight color (Base is white)
+      <input type="color" name="caption_color" value="#FFEA00" style="height:2.1rem;padding:.1rem">
+      <span class="meta" style="font-size:0.75rem">The word currently being spoken takes this color. Base words stay pure white.</span>
+    </label>
+    <label class="field">Caption position
+      <select name="caption_position">
+        {% for value, label in positions %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="field">Lower-third text (optional)
+      <input type="text" name="brand_lower_third" placeholder="e.g. Acme Podcast">
+    </label>
+    <label class="field">Branding logo (optional)
+      <input type="file" name="brand_logo" accept="image/png,image/jpeg,image/webp">
+    </label>
+    <label class="field">Default template
+      <select name="default_template">
+        <option value="full_bleed_solo" selected>Full Bleed (Solo Speaker)</option>
+        <option value="blurred_backdrop">Blurred Backdrop (Context / Wide)</option>
+        <option value="stage_solo_speaker">Stage &amp; Solo Speaker</option>
+        <option value="podcast_split_screen">Podcast &amp; Dialogue</option>
+      </select>
+    </label>
+    <label class="field">Speaker Visual Filter (Skin tone &amp; clarity pop)
+      <select name="video_filter">
+        {% for val, label in video_filters %}
+        <option value="{{ val }}" {% if val == 'vivid_pop' %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <div style="border-top:1px solid var(--line-hairline);padding-top:0.75rem;display:flex;flex-direction:column;gap:0.6rem">
+      <div style="font-weight:600;font-size:0.85rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-muted)">Agency Production Engine</div>
+      <label class="flex" style="align-items:center;gap:0.5rem;cursor:pointer">
+        <input type="checkbox" name="zoom_punch" checked style="width:auto">
+        <span><strong>Dynamic Retention Zoom:</strong> 1.15x punch-ins on sentence cuts</span>
+      </label>
+      <label class="flex" style="align-items:center;gap:0.5rem;cursor:pointer">
+        <input type="checkbox" name="master_audio" checked style="width:auto">
+        <span><strong>Broadcast Audio Mastering:</strong> -14 LUFS vocal clarity EQ</span>
+      </label>
+      <label class="flex" style="align-items:center;gap:0.5rem;cursor:pointer">
+        <input type="checkbox" name="hook_card" checked style="width:auto">
+        <span><strong>Visual Hook Card:</strong> Opening headline badge (0.0 - 2.5s)</span>
+      </label>
+      <label class="flex" style="align-items:center;gap:0.5rem;cursor:pointer">
+        <input type="checkbox" name="podcast_solo_switch" checked style="width:auto">
+        <span><strong>Dynamic Podcast Solo Switcher:</strong> Periodic full-vertical solo cuts on talking host</span>
+      </label>
+    </div>
+    <div class="flex" style="justify-content:flex-end">
+      <a class="btn ghost" href="{% url 'home' %}">Cancel</a>
+      <button class="btn green" type="submit">Create project →</button>
+    </div>
+  </div>
+</form>
+<p class="meta mt-1" style="max-width:520px">Only the client name is required — everything else can be skipped and changed later from inside the project.</p>
+{% endblock %}

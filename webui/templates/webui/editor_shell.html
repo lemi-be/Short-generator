@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Editor — {{ video_id }} | Shorts Generator</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: #111; color: #e5e7eb; overflow: hidden; }
+    #topbar { display: flex; align-items: center; gap: 1rem; padding: .6rem 1rem; background: #1a1a1a; border-bottom: 1px solid #333; font-size: .85rem; flex-wrap: wrap; }
+    #topbar a { color: #7aa7ff; text-decoration: none; }
+    #topbar a:hover { text-decoration: underline; }
+    #topbar .spacer { flex: 1; }
+    #cap { color: #4ade80; font-weight: 600; }
+    #cap.bad { color: #f87171; }
+    #hint { background: #14213d; border-bottom: 1px solid #1e3a5f; padding: .6rem 1rem; font-size: .85rem; line-height: 1.55; }
+    #hint code { background: #0f1b30; padding: .1rem .35rem; border-radius: 4px; font-size: .85em; color: #93c5fd; }
+    #hint .step { color: #dbeafe; }
+    #hint button { margin-left: .5rem; padding: .2rem .6rem; border: 0; border-radius: 4px; background: #3b82f6; color: #fff; cursor: pointer; font-size: .8rem; }
+    #hint.bad { background: #3d1414; border-color: #7f1d1d; }
+    #exports { margin-top: .3rem; }
+    #exports a { color: #7aa7ff; margin-right: .75rem; }
+    iframe { display: block; width: 100%; height: calc(100% - 93px); border: 0; background: #000; }
+  </style>
+</head>
+<body>
+  <div id="topbar">
+    <a href="{% url 'home' %}">Projects</a>
+    <strong>FreeCut</strong> &mdash; {{ filename }} ({{ duration|floatformat:0 }}s)
+    {% if has_srt %}| <a href="{{ srt_url }}" download>Transcript (.srt)</a>{% endif %}
+    | <a href="{{ source_url }}" target="_blank">View source</a>
+    <span class="spacer"></span>
+    <span id="cap" class="bad">checking…</span>
+  </div>
+  <div id="hint">
+    <strong>Workspace:</strong> the editor opens straight on your project list. On first
+    visit it will ask you to pick this folder — do it once and it is remembered:
+    <code id="ws">{{ workspace }}</code>
+    <span class="step">&mdash; your sources, transcripts, audio, logos and stock clips are already in it.</span>
+    <button id="hide-hint" type="button">Got it</button>
+    <div id="exports"></div>
+  </div>
+  <iframe id="freecut" src="{{ editor_start_url }}" allow="clipboard-write; fullscreen"></iframe>
+
+  <script>
+    const exportsUrl = "{% url 'freecut_exports' %}";
+    const cap = document.getElementById('cap');
+    const hint = document.getElementById('hint');
+
+    const checks = {
+      'Secure context': window.isSecureContext,
+      'Cross-origin isolation': window.crossOriginIsolated,
+      'WebGPU': !!navigator.gpu,
+      'WebCodecs': typeof VideoEncoder === 'function' && typeof VideoDecoder === 'function',
+      'Folder access': !!window.showDirectoryPicker,
+      'SharedArrayBuffer': typeof SharedArrayBuffer === 'function',
+    };
+    const missing = Object.keys(checks).filter(k => !checks[k]);
+    if (missing.length === 0) {
+      cap.textContent = 'ready';
+      cap.classList.remove('bad');
+    } else {
+      cap.textContent = 'unsupported: ' + missing.join(', ');
+      cap.classList.add('bad');
+      hint.classList.add('bad');
+      hint.innerHTML = '<strong>This browser can\'t run FreeCut.</strong> Missing: ' +
+        missing.map(m => '<code>' + m + '</code>').join(', ') +
+        '. Use <strong>Chrome or Edge 113+</strong> at <strong>http://127.0.0.1:8000</strong> ' +
+        '(the COOP/COEP headers are already set by this page).';
+    }
+
+    const HINT_KEY = 'freecut_ws_hint_dismissed';
+    if (localStorage.getItem(HINT_KEY)) {
+      hint.style.display = 'none';
+      document.querySelector('iframe').style.height = 'calc(100% - 41px)';
+    }
+    document.getElementById('hide-hint').addEventListener('click', () => {
+      localStorage.setItem(HINT_KEY, '1');
+      hint.style.display = 'none';
+      document.querySelector('iframe').style.height = 'calc(100% - 41px)';
+    });
+
+    (function refreshExports() {
+      fetch(exportsUrl, { headers: { 'Accept': 'application/json' } })
+        .then(r => r.json())
+        .then(data => {
+          const box = document.getElementById('exports');
+          if (!data.exports || !data.exports.length) return;
+          box.innerHTML = '<strong>Exports:</strong> ' + data.exports.map(e =>
+            '<a href="/output/' + e.path.split('/').map(encodeURIComponent).join('/') +
+            '" target="_blank">' + e.name + '</a>'
+          ).join(' ');
+        })
+        .catch(() => {});
+    })();
+  </script>
+</body>
+</html>

@@ -112,9 +112,20 @@ def _load_srt_cache(cache_path: Path) -> Dict:
     if word_path.exists():
         try:
             word_blocks = json.loads(word_path.read_text(encoding="utf-8"))
-            for i, segment in enumerate(segments):
-                if i < len(word_blocks):
-                    segment["words"] = word_blocks[i]
+            from ..segmenter import is_sentence_end, resegment_by_sentences
+            needs_resegment = any(
+                not is_sentence_end(s.get("text", ""))
+                for s in segments[:-1]
+            )
+            if needs_resegment:
+                new_segs = resegment_by_sentences(word_blocks)
+                if new_segs:
+                    segments = new_segs
+                    _write_srt_cache(str(cache_path).replace(".srt", ""), {"duration": segments[-1]["end"] if segments else 0.0, "segments": segments})
+            else:
+                for i, segment in enumerate(segments):
+                    if i < len(word_blocks):
+                        segment["words"] = word_blocks[i]
         except (ValueError, OSError):
             pass
 
@@ -225,6 +236,10 @@ def transcribe_local(media_path: str, language: Optional[str] = None) -> Dict:
 
     duration = total_duration or (segments[-1]["end"] if segments else 0.0)
     progress.finish(f"{len(segments)} segments, {duration:.0f}s of audio")
+    from ..segmenter import resegment_by_sentences
+    sentence_segments = resegment_by_sentences(segments)
+    if sentence_segments:
+        segments = sentence_segments
     transcript = {"duration": duration, "segments": segments}
     cache_path = _write_srt_cache(media_path, transcript)
     print(f"[transcribe/local] wrote cache: {cache_path}", flush=True)

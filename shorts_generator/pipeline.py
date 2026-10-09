@@ -22,16 +22,17 @@ def _run_local(
     min_clip_seconds: int,
     max_clip_seconds: int,
     template: Optional[str] = None,
+    burn_captions: bool = False,
+    cookies_path: Optional[str] = None,
 ) -> Dict:
     from .local.clipper import DEFAULT_TEMPLATE, TEMPLATE_LABELS, crop_highlights_local
     from .local.downloader import download_youtube_local
     from .local.llm import call_local_llm
     from .local.transcriber import transcribe_local
-
-    from .progress import stage
+    from .progress import Progress
 
     stage(1, 4, "Downloading source video")
-    source_path = download_youtube_local(youtube_url, fmt=download_format)
+    source_path = download_youtube_local(youtube_url, fmt=download_format, cookies_path=cookies_path)
 
     stage(2, 4, "Transcribing audio with Whisper")
     transcript = transcribe_local(source_path, language=language)
@@ -56,7 +57,13 @@ def _run_local(
 
     label = TEMPLATE_LABELS.get(template or DEFAULT_TEMPLATE, "Stage & Solo Speaker")
     stage(4, 4, f"Cropping {len(top)} vertical shorts ({label})")
-    shorts = crop_highlights_local(source_path, top, template=template, transcript=transcript)
+    shorts = crop_highlights_local(
+        source_path,
+        top,
+        template=template,
+        transcript=transcript,
+        burn_captions=burn_captions,
+    )
 
     return {
         "mode": "local",
@@ -112,12 +119,14 @@ def _run_api(
 def generate_shorts(
     youtube_url: str,
     num_clips: int = 10,
-    download_format: str = "720",
+    download_format: str = "1080",
     language: Optional[str] = None,
     mode: str = "local",
     min_clip_seconds: int = 30,
     max_clip_seconds: int = 60,
     template: Optional[str] = None,
+    burn_captions: bool = False,
+    cookies_path: Optional[str] = None,
 ) -> Dict:
     """Run the full pipeline and return a structured result.
 
@@ -132,6 +141,11 @@ def generate_shorts(
         max_clip_seconds: clamp highlights longer than this (default 60).
         template: cropping template key (see TEMPLATE_SPECS in clipper.py).
             Defaults to stage_solo_speaker.
+        burn_captions: when False (default), the shorts are rendered clean and
+            captions are styled as layers in the FreeCut editor and baked in at
+            export time. When True, word-by-word captions are burned into the
+            frames during rendering.
+        cookies_path: optional path to a cookies.txt file for YouTube authentication.
 
     Returns:
         {
@@ -147,6 +161,7 @@ def generate_shorts(
         return _run_local(
             youtube_url, num_clips, download_format, language,
             min_clip_seconds, max_clip_seconds, template=template,
+            burn_captions=burn_captions, cookies_path=cookies_path,
         )
     if mode == "api":
         return _run_api(

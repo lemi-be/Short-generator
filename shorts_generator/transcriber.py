@@ -86,12 +86,33 @@ def transcribe(media_url: str, language: Optional[str] = None) -> Dict:
 
     segments = []
     for s in verbose.get("segments") or []:
-        segments.append({
+        seg = {
             "start": float(s.get("start", 0.0)),
             "end": float(s.get("end", 0.0)),
             "text": (s.get("text") or "").strip(),
-        })
+        }
+        # Whisper verbose_json gives per-word timestamps (word/start/end). Keep
+        # them so the editor can render karaoke-style captions and the clipper
+        # can burn audio-synced word-by-word text.
+        words = []
+        for w in s.get("words") or []:
+            word = str(w.get("word", w.get("text", ""))).strip()
+            if not word:
+                continue
+            words.append({
+                "word": word,
+                "text": word,
+                "start": float(w.get("start", 0.0)),
+                "end": float(w.get("end", 0.0)),
+            })
+        if words:
+            seg["words"] = words
+        segments.append(seg)
 
     duration = float(verbose.get("duration") or (segments[-1]["end"] if segments else 0.0))
+    from .segmenter import resegment_by_sentences
+    sentence_segments = resegment_by_sentences(segments)
+    if sentence_segments:
+        segments = sentence_segments
     print(f"[transcribe] {len(segments)} segments, {duration:.0f}s of audio", flush=True)
     return {"duration": duration, "segments": segments}
